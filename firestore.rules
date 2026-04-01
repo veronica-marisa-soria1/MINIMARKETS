@@ -23,6 +23,21 @@ service cloud.firestore {
     //   - paymentMethod: string (required)
     //   - timestamp: timestamp (required)
     //   - userId: string (required)
+    //   - shiftId: string (required)
+    //   - cashierName: string (optional)
+    //   - amountPaid: number (required)
+    //   - change: number (required)
+    //
+    // Collection: shifts
+    // Fields:
+    //   - cashierName: string (required)
+    //   - startTime: timestamp (required)
+    //   - endTime: timestamp (optional)
+    //   - initialCash: number (optional)
+    //   - finalCash: number (optional)
+    //   - totalSales: number (optional)
+    //   - status: string (required)
+    //   - userId: string (required)
     //
     // Collection: users
     // Fields:
@@ -62,6 +77,16 @@ service cloud.firestore {
       return data.items is list && data.items.size() > 0 &&
              data.total is number && data.total >= 0 &&
              data.timestamp is timestamp &&
+             data.userId == request.auth.uid &&
+             data.shiftId is string &&
+             data.amountPaid is number && data.amountPaid >= 0 &&
+             data.change is number && data.change >= 0;
+    }
+
+    function isValidShift(data) {
+      return data.cashierName is string && data.cashierName.size() > 0 &&
+             data.startTime is timestamp &&
+             data.status in ['open', 'closed'] &&
              data.userId == request.auth.uid;
     }
 
@@ -81,6 +106,13 @@ service cloud.firestore {
       allow read: if isStaff();
       allow create: if isStaff() && isValidSale(request.resource.data);
       allow update, delete: if isAdmin();
+    }
+
+    match /shifts/{shiftId} {
+      allow read: if isStaff();
+      allow create: if isStaff() && isValidShift(request.resource.data);
+      allow update: if isStaff() && isValidShift(request.resource.data);
+      allow delete: if isAdmin();
     }
   }
 }

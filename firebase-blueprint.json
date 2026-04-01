@@ -39,9 +39,30 @@
         "total": { "type": "number" },
         "paymentMethod": { "type": "string", "enum": ["cash", "card", "transfer"] },
         "timestamp": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" },
+        "shiftId": { "type": "string" },
+        "cashierName": { "type": "string" },
+        "amountPaid": { "type": "number" },
+        "change": { "type": "number" }
+      },
+      "required": ["items", "total", "timestamp", "shiftId"]
+    },
+    "Shift": {
+      "title": "Shift",
+      "description": "A work shift record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "cashierName": { "type": "string" },
+        "startTime": { "type": "string", "format": "date-time" },
+        "endTime": { "type": "string", "format": "date-time" },
+        "initialCash": { "type": "number" },
+        "finalCash": { "type": "number" },
+        "totalSales": { "type": "number" },
+        "status": { "type": "string", "enum": ["open", "closed"] },
         "userId": { "type": "string" }
       },
-      "required": ["items", "total", "timestamp"]
+      "required": ["cashierName", "startTime", "status", "userId"]
     },
     "User": {
       "title": "User",
@@ -63,6 +84,10 @@
     "/sales/{saleId}": {
       "schema": "Sale",
       "description": "Collection of sales transactions."
+    },
+    "/shifts/{shiftId}": {
+      "schema": "Shift",
+      "description": "Collection of work shifts."
     },
     "/users/{userId}": {
       "schema": "User",

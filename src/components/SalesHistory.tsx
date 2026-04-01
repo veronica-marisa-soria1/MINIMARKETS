@@ -11,7 +11,9 @@ import {
   Banknote,
   Smartphone,
   X,
-  RotateCcw
+  RotateCcw,
+  DollarSign,
+  TrendingUp
 } from 'lucide-react';
 import { 
   collection, 
@@ -33,6 +35,10 @@ interface Sale {
   paymentMethod: 'cash' | 'card' | 'transfer';
   timestamp: Timestamp;
   userId: string;
+  cashierName?: string;
+  shiftId?: string;
+  amountPaid?: number;
+  change?: number;
 }
 
 export default function SalesHistory() {
@@ -79,6 +85,42 @@ export default function SalesHistory() {
     setSearchTerm('');
   };
 
+  const exportToCSV = () => {
+    if (filteredSales.length === 0) return;
+
+    const headers = ['ID Venta', 'Fecha', 'Hora', 'Cajero', 'Metodo Pago', 'Total', 'Productos'];
+    const rows = filteredSales.map(sale => {
+      const date = sale.timestamp?.toDate().toLocaleDateString('es-AR');
+      const time = sale.timestamp?.toDate().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+      const items = sale.items.map(item => `${item.quantity}x ${item.name}`).join('; ');
+      
+      return [
+        `"${sale.id}"`,
+        `"${date}"`,
+        `"${time}"`,
+        `"${sale.cashierName || 'N/A'}"`,
+        `"${sale.paymentMethod}"`,
+        `"${sale.total}"`,
+        `"${items}"`
+      ];
+    });
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `ventas_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const getPaymentIcon = (method: string) => {
     switch (method) {
       case 'cash': return <Banknote className="w-4 h-4" />;
@@ -93,6 +135,17 @@ export default function SalesHistory() {
     s.paymentMethod.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const summary = filteredSales.reduce((acc, sale) => {
+    acc.totalSales += sale.total;
+    sale.items.forEach(item => {
+      acc.totalCost += (item.cost || 0) * item.quantity;
+      acc.totalItems += item.quantity;
+    });
+    return acc;
+  }, { totalSales: 0, totalCost: 0, totalItems: 0 });
+
+  const totalProfit = summary.totalSales - summary.totalCost;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -101,10 +154,45 @@ export default function SalesHistory() {
           <p className="text-slate-500 text-sm">Consulta y gestiona todas las transacciones realizadas.</p>
         </div>
         <div className="flex gap-2">
-          <button className="px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl font-semibold flex items-center gap-2 hover:bg-slate-50 transition-colors">
+          <button 
+            onClick={exportToCSV}
+            disabled={filteredSales.length === 0}
+            className="px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl font-semibold flex items-center gap-2 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
             <Download className="w-5 h-5" />
             Exportar
           </button>
+        </div>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-12 h-12 bg-indigo-50 rounded-xl flex items-center justify-center">
+            <DollarSign className="w-6 h-6 text-indigo-600" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase">Ventas Totales</p>
+            <p className="text-xl font-bold text-slate-900">{formatCurrency(summary.totalSales)}</p>
+          </div>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-12 h-12 bg-emerald-50 rounded-xl flex items-center justify-center">
+            <TrendingUp className="w-6 h-6 text-emerald-600" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase">Ganancia Estimada</p>
+            <p className="text-xl font-bold text-emerald-600">{formatCurrency(totalProfit)}</p>
+          </div>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-12 h-12 bg-amber-50 rounded-xl flex items-center justify-center">
+            <History className="w-6 h-6 text-amber-600" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase">Productos Vendidos</p>
+            <p className="text-xl font-bold text-slate-900">{summary.totalItems}</p>
+          </div>
         </div>
       </div>
 
@@ -161,6 +249,7 @@ export default function SalesHistory() {
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">ID Venta</th>
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Fecha y Hora</th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Cajero</th>
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Método</th>
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Productos</th>
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Total</th>
@@ -189,6 +278,9 @@ export default function SalesHistory() {
                           {sale.timestamp?.toDate().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="text-sm font-medium text-slate-700">{sale.cashierName || 'N/A'}</span>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2 text-xs font-bold text-slate-600 uppercase">
@@ -238,7 +330,16 @@ export default function SalesHistory() {
                                   ))}
                                 </div>
                                 <div className="mt-4 pt-4 border-t border-slate-200 flex justify-between items-center">
-                                  <span className="text-xs text-slate-500">ID de Usuario: {sale.userId}</span>
+                                  <div className="flex flex-col gap-1">
+                                    <span className="text-xs text-slate-500">Cajero: <span className="font-bold text-slate-700">{sale.cashierName || 'N/A'}</span></span>
+                                    <span className="text-xs text-slate-500">ID Turno: <span className="font-mono">{sale.shiftId || 'N/A'}</span></span>
+                                    {sale.paymentMethod === 'cash' && sale.amountPaid !== undefined && (
+                                      <>
+                                        <span className="text-xs text-slate-500">Recibido: <span className="font-bold text-slate-700">{formatCurrency(sale.amountPaid)}</span></span>
+                                        <span className="text-xs text-slate-500">Vuelto: <span className="font-bold text-emerald-600">{formatCurrency(sale.change || 0)}</span></span>
+                                      </>
+                                    )}
+                                  </div>
                                   <div className="text-right">
                                     <p className="text-xs text-slate-500 font-bold uppercase">Total Final</p>
                                     <p className="text-lg font-bold text-indigo-600">{formatCurrency(sale.total)}</p>

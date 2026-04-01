@@ -38,12 +38,14 @@ interface CartItem extends Product {
   quantity: number;
 }
 
-export default function POS({ user }: { user: any }) {
+export default function POS({ user, activeShift }: { user: any, activeShift: any }) {
   const [products, setProducts] = useState<Product[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash');
+  const [amountPaid, setAmountPaid] = useState<number>(0);
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [lastSaleId, setLastSaleId] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -56,16 +58,52 @@ export default function POS({ user }: { user: any }) {
       });
       setProducts(prods);
     });
+
+    // Auto-focus search input on mount
+    searchInputRef.current?.focus();
+
     return () => unsubscribe();
   }, []);
 
+  // Barcode scanner auto-add logic
+  useEffect(() => {
+    if (searchTerm.length >= 3) {
+      const exactMatch = products.find(p => p.barcode === searchTerm);
+      if (exactMatch) {
+        addToCart(exactMatch);
+        setSearchTerm('');
+      }
+    }
+  }, [searchTerm, products]);
+
+  // Global keydown listener to focus search input
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Don't focus if we are in another input or modal is open
+      if (
+        document.activeElement?.tagName === 'INPUT' || 
+        document.activeElement?.tagName === 'TEXTAREA' ||
+        isSuccessModalOpen ||
+        isPreviewModalOpen
+      ) return;
+
+      // Focus search input on any alphanumeric key
+      if (/^[a-zA-Z0-9]$/.test(e.key)) {
+        searchInputRef.current?.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [isSuccessModalOpen, isPreviewModalOpen]);
+
   const addToCart = (product: Product) => {
-    if (product.stock <= 0) return;
+    const effectiveStock = getEffectiveStock(product);
+    if (effectiveStock <= 0) return;
     
     setCart(prev => {
       const existing = prev.find(item => item.id === product.id);
       if (existing) {
-        if (existing.quantity >= product.stock) return prev;
         return prev.map(item => 
           item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
         );
@@ -92,9 +130,18 @@ export default function POS({ user }: { user: any }) {
   };
 
   const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  const taxRate = 0.21; // 21% IVA placeholder
+  const subtotal = total / (1 + taxRate);
+  const taxAmount = total - subtotal;
+  const change = paymentMethod === 'cash' ? Math.max(0, amountPaid - total) : 0;
+
+  const getEffectiveStock = (product: Product) => {
+    const cartItem = cart.find(item => item.id === product.id);
+    return product.stock - (cartItem?.quantity || 0);
+  };
 
   const handleCompleteSale = async () => {
-    if (cart.length === 0) return;
+    if (cart.length === 0 || !activeShift) return;
 
     const saleData = {
       items: cart.map(item => ({
@@ -102,12 +149,17 @@ export default function POS({ user }: { user: any }) {
         name: item.name,
         quantity: item.quantity,
         price: item.price,
+        cost: item.cost || 0,
         subtotal: item.price * item.quantity
       })),
       total,
       paymentMethod,
+      amountPaid: paymentMethod === 'cash' ? amountPaid : total,
+      change: paymentMethod === 'cash' ? change : 0,
       timestamp: Timestamp.now(),
-      userId: user.uid
+      userId: user.uid,
+      shiftId: activeShift.id,
+      cashierName: activeShift.cashierName
     };
 
     try {
@@ -121,9 +173,16 @@ export default function POS({ user }: { user: any }) {
         });
       }
 
+      // 3. Update Shift total sales
+      await updateDoc(doc(db, 'shifts', activeShift.id), {
+        totalSales: increment(total)
+      });
+
       setLastSaleId(saleRef.id);
       setIsSuccessModalOpen(true);
+      setIsPreviewModalOpen(false);
       setCart([]);
+      setAmountPaid(0);
     } catch (error) {
       console.error("Error completing sale:", error);
     }
@@ -165,33 +224,36 @@ export default function POS({ user }: { user: any }) {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-            {filteredProducts.map(product => (
-              <button
-                key={product.id}
-                onClick={() => addToCart(product)}
-                disabled={product.stock <= 0}
-                className={cn(
-                  "flex items-center justify-between p-4 rounded-xl border transition-all text-left group",
-                  product.stock > 0 
-                    ? "bg-white border-slate-100 hover:border-indigo-200 hover:bg-indigo-50/30" 
-                    : "bg-slate-50 border-slate-100 opacity-60 cursor-not-allowed"
-                )}
-              >
-                <div className="min-w-0">
-                  <p className="font-bold text-slate-900 truncate">{product.name}</p>
-                  <p className="text-xs text-slate-500 font-mono">{product.barcode || 'S/C'}</p>
-                </div>
-                <div className="text-right flex-shrink-0">
-                  <p className="font-bold text-indigo-600">{formatCurrency(product.price)}</p>
-                  <p className={cn(
-                    "text-[10px] font-bold uppercase",
-                    product.stock <= 5 ? "text-amber-600" : "text-slate-400"
-                  )}>
-                    Stock: {product.stock}
-                  </p>
-                </div>
-              </button>
-            ))}
+            {filteredProducts.map(product => {
+              const effectiveStock = getEffectiveStock(product);
+              return (
+                <button
+                  key={product.id}
+                  onClick={() => addToCart(product)}
+                  disabled={effectiveStock <= 0}
+                  className={cn(
+                    "flex items-center justify-between p-4 rounded-xl border transition-all text-left group",
+                    effectiveStock > 0 
+                      ? "bg-white border-slate-100 hover:border-indigo-200 hover:bg-indigo-50/30" 
+                      : "bg-slate-50 border-slate-100 opacity-60 cursor-not-allowed"
+                  )}
+                >
+                  <div className="min-w-0">
+                    <p className="font-bold text-slate-900 truncate">{product.name}</p>
+                    <p className="text-xs text-slate-500 font-mono">{product.barcode || 'S/C'}</p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="font-bold text-indigo-600">{formatCurrency(product.price)}</p>
+                    <p className={cn(
+                      "text-[10px] font-bold uppercase",
+                      effectiveStock <= 5 ? "text-amber-600" : "text-slate-400"
+                    )}>
+                      Stock: {effectiveStock}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
             {searchTerm.length > 0 && filteredProducts.length === 0 && (
               <div className="col-span-full py-8 text-center text-slate-400 italic">
                 No se encontraron productos con ese nombre o código.
@@ -212,16 +274,26 @@ export default function POS({ user }: { user: any }) {
         <div className="flex-1 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
           <h3 className="font-bold text-slate-900 mb-4">Acceso Rápido</h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 overflow-y-auto pr-2">
-            {products.slice(0, 12).map(product => (
-              <button
-                key={product.id}
-                onClick={() => addToCart(product)}
-                className="p-3 bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 rounded-xl text-center transition-colors border border-transparent hover:border-indigo-100"
-              >
-                <p className="text-xs font-bold truncate">{product.name}</p>
-                <p className="text-xs font-medium opacity-70">{formatCurrency(product.price)}</p>
-              </button>
-            ))}
+            {products.slice(0, 12).map(product => {
+              const effectiveStock = getEffectiveStock(product);
+              return (
+                <button
+                  key={product.id}
+                  onClick={() => addToCart(product)}
+                  disabled={effectiveStock <= 0}
+                  className={cn(
+                    "p-3 rounded-xl text-center transition-colors border",
+                    effectiveStock > 0
+                      ? "bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 border-transparent hover:border-indigo-100"
+                      : "bg-slate-100 border-slate-200 opacity-50 cursor-not-allowed"
+                  )}
+                >
+                  <p className="text-xs font-bold truncate">{product.name}</p>
+                  <p className="text-xs font-medium opacity-70">{formatCurrency(product.price)}</p>
+                  <p className="text-[9px] font-bold text-slate-400">Stock: {effectiveStock}</p>
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -314,7 +386,7 @@ export default function POS({ user }: { user: any }) {
             </div>
 
             <button 
-              onClick={handleCompleteSale}
+              onClick={() => setIsPreviewModalOpen(true)}
               disabled={cart.length === 0}
               className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-xl shadow-xl shadow-indigo-100 transition-all flex items-center justify-center gap-2"
             >
@@ -323,6 +395,130 @@ export default function POS({ user }: { user: any }) {
           </div>
         </div>
       </div>
+
+      {/* Checkout Preview Modal */}
+      <AnimatePresence>
+        {isPreviewModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+              onClick={() => setIsPreviewModalOpen(false)}
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                <h3 className="text-xl font-bold text-slate-900">Resumen de Venta</h3>
+                <button 
+                  onClick={() => setIsPreviewModalOpen(false)}
+                  className="p-2 hover:bg-slate-100 rounded-full text-slate-400 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-6">
+                {/* Items List */}
+                <div className="max-h-48 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                  {cart.map(item => (
+                    <div key={item.id} className="flex justify-between text-sm">
+                      <span className="text-slate-600">
+                        <span className="font-bold text-slate-900">{item.quantity}x</span> {item.name}
+                      </span>
+                      <span className="font-medium text-slate-900">{formatCurrency(item.price * item.quantity)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="h-px bg-slate-100" />
+
+                {/* Totals Breakdown */}
+                <div className="space-y-2">
+                  <div className="flex justify-between text-slate-500 text-sm">
+                    <span>Subtotal (Neto)</span>
+                    <span>{formatCurrency(subtotal)}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-500 text-sm">
+                    <span>IVA (21%)</span>
+                    <span>{formatCurrency(taxAmount)}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-900 text-2xl font-black pt-2">
+                    <span>Total a Pagar</span>
+                    <span className="text-indigo-600">{formatCurrency(total)}</span>
+                  </div>
+                </div>
+
+                {/* Payment Method Confirmation */}
+                <div className="space-y-4">
+                  <div className="bg-indigo-50 p-4 rounded-2xl flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm">
+                        {paymentMethod === 'cash' && <Banknote className="w-5 h-5 text-indigo-600" />}
+                        {paymentMethod === 'card' && <CreditCard className="w-5 h-5 text-indigo-600" />}
+                        {paymentMethod === 'transfer' && <Smartphone className="w-5 h-5 text-indigo-600" />}
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-indigo-400 font-bold uppercase leading-none">Método de Pago</p>
+                        <p className="text-sm font-bold text-indigo-900">
+                          {paymentMethod === 'cash' ? 'Efectivo' : paymentMethod === 'card' ? 'Tarjeta' : 'Transferencia'}
+                        </p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => setIsPreviewModalOpen(false)}
+                      className="text-xs font-bold text-indigo-600 hover:underline"
+                    >
+                      Cambiar
+                    </button>
+                  </div>
+
+                  {paymentMethod === 'cash' && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Monto Recibido</label>
+                        <div className="relative">
+                          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
+                          <input 
+                            type="number" 
+                            className="w-full pl-8 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-lg"
+                            placeholder="0.00"
+                            value={amountPaid || ''}
+                            onChange={(e) => setAmountPaid(Number(e.target.value))}
+                            autoFocus
+                          />
+                        </div>
+                      </div>
+                      {amountPaid >= total && (
+                        <div className="flex justify-between items-center p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                          <span className="text-sm font-bold text-emerald-700">Vuelto:</span>
+                          <span className="text-lg font-black text-emerald-700">{formatCurrency(change)}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-6 bg-slate-50 border-t border-slate-100">
+                <button 
+                  onClick={handleCompleteSale}
+                  disabled={paymentMethod === 'cash' && amountPaid < total}
+                  className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-2xl shadow-lg shadow-indigo-100 transition-all flex items-center justify-center gap-2"
+                >
+                  <CheckCircle2 className="w-5 h-5" />
+                  Confirmar y Registrar Venta
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Success Modal */}
       <AnimatePresence>
@@ -354,6 +550,12 @@ export default function POS({ user }: { user: any }) {
                   <span className="text-slate-900">Total:</span>
                   <span className="text-indigo-600">{formatCurrency(total)}</span>
                 </div>
+                {paymentMethod === 'cash' && (
+                  <div className="flex justify-between text-sm mt-2 pt-2 border-t border-slate-100">
+                    <span className="text-slate-500">Vuelto entregado:</span>
+                    <span className="font-bold text-emerald-600">{formatCurrency(change)}</span>
+                  </div>
+                )}
               </div>
               <button 
                 onClick={() => setIsSuccessModalOpen(false)}

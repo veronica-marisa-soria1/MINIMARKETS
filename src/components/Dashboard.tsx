@@ -5,7 +5,9 @@ import {
   Package, 
   AlertTriangle,
   ArrowUpRight,
-  ArrowDownRight
+  ArrowDownRight,
+  Users,
+  Clock
 } from 'lucide-react';
 import { 
   collection, 
@@ -30,55 +32,78 @@ import {
   Area
 } from 'recharts';
 
-export default function Dashboard() {
+export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | null }) {
   const [stats, setStats] = useState({
     todaySales: 0,
+    todayProfit: 0,
     totalProducts: 0,
     lowStock: 0,
     monthlyRevenue: 0
   });
   const [recentSales, setRecentSales] = useState<any[]>([]);
+  const [activeShifts, setActiveShifts] = useState<any[]>([]);
   const [chartData, setChartData] = useState<any[]>([]);
+  const [productsMap, setProductsMap] = useState<Record<string, any>>({});
 
   useEffect(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const todayTimestamp = Timestamp.fromDate(today);
 
-    // Today's Sales
+    // Products Stats & Map
+    const productsQuery = collection(db, 'products');
+    const unsubscribeProducts = onSnapshot(productsQuery, (snapshot) => {
+      let total = 0;
+      let low = 0;
+      const pMap: Record<string, any> = {};
+      snapshot.forEach(doc => {
+        total++;
+        const data = doc.data();
+        pMap[doc.id] = data;
+        if (data.stock <= (data.minStock || 5)) {
+          low++;
+        }
+      });
+      setProductsMap(pMap);
+      setStats(prev => ({ ...prev, totalProducts: total, lowStock: low }));
+    });
+
+    // Today's Sales & Profit
     const salesQuery = query(
       collection(db, 'sales'),
       where('timestamp', '>=', todayTimestamp)
     );
 
     const unsubscribeSales = onSnapshot(salesQuery, (snapshot) => {
-      let total = 0;
+      let totalSales = 0;
+      let totalCost = 0;
+      
       snapshot.forEach(doc => {
-        total += doc.data().total;
-      });
-      setStats(prev => ({ ...prev, todaySales: total }));
-    });
-
-    // Products Stats
-    const productsQuery = collection(db, 'products');
-    const unsubscribeProducts = onSnapshot(productsQuery, (snapshot) => {
-      let total = 0;
-      let low = 0;
-      snapshot.forEach(doc => {
-        total++;
-        const data = doc.data();
-        if (data.stock <= (data.minStock || 5)) {
-          low++;
+        const sale = doc.data();
+        totalSales += sale.total;
+        
+        // Calculate cost from items
+        if (sale.items && Array.isArray(sale.items)) {
+          sale.items.forEach((item: any) => {
+            // Try to get cost from sale item (future proof) or from products map
+            const itemCost = item.cost || productsMap[item.productId]?.cost || 0;
+            totalCost += itemCost * item.quantity;
+          });
         }
       });
-      setStats(prev => ({ ...prev, totalProducts: total, lowStock: low }));
+      
+      setStats(prev => ({ 
+        ...prev, 
+        todaySales: totalSales,
+        todayProfit: totalSales - totalCost
+      }));
     });
 
     // Recent Sales
     const recentQuery = query(
       collection(db, 'sales'),
       orderBy('timestamp', 'desc'),
-      limit(5)
+      limit(10)
     );
     const unsubscribeRecent = onSnapshot(recentQuery, (snapshot) => {
       const sales: any[] = [];
@@ -88,7 +113,23 @@ export default function Dashboard() {
       setRecentSales(sales);
     });
 
-    // Chart Data (Mocking some data for visual if no real data yet)
+    // Active Shifts (Admin only)
+    let unsubscribeShifts = () => {};
+    if (userRole === 'admin') {
+      const shiftsQuery = query(
+        collection(db, 'shifts'),
+        where('status', '==', 'open')
+      );
+      unsubscribeShifts = onSnapshot(shiftsQuery, (snapshot) => {
+        const shifts: any[] = [];
+        snapshot.forEach(doc => {
+          shifts.push({ id: doc.id, ...doc.data() });
+        });
+        setActiveShifts(shifts);
+      });
+    }
+
+    // Chart Data
     setChartData([
       { name: 'Lun', sales: 4000 },
       { name: 'Mar', sales: 3000 },
@@ -103,8 +144,9 @@ export default function Dashboard() {
       unsubscribeSales();
       unsubscribeProducts();
       unsubscribeRecent();
+      unsubscribeShifts();
     };
-  }, []);
+  }, [productsMap, userRole]); // Re-run if productsMap or userRole changes
 
   const cards = [
     { 
@@ -116,11 +158,11 @@ export default function Dashboard() {
       trendUp: true
     },
     { 
-      label: 'Productos Totales', 
-      value: stats.totalProducts, 
-      icon: Package, 
-      color: 'bg-blue-500',
-      trend: '+3 nuevos',
+      label: 'Ganancia de Hoy', 
+      value: formatCurrency(stats.todayProfit), 
+      icon: TrendingUp, 
+      color: 'bg-indigo-600',
+      trend: stats.todayProfit > 0 ? 'Rentable' : 'Sin datos',
       trendUp: true
     },
     { 
@@ -132,11 +174,11 @@ export default function Dashboard() {
       trendUp: stats.lowStock === 0
     },
     { 
-      label: 'Ingresos Mensuales', 
-      value: formatCurrency(stats.monthlyRevenue || 125400), 
-      icon: TrendingUp, 
-      color: 'bg-indigo-500',
-      trend: '+8.2%',
+      label: 'Productos Totales', 
+      value: stats.totalProducts, 
+      icon: Package, 
+      color: 'bg-blue-500',
+      trend: '+3 nuevos',
       trendUp: true
     },
   ];
@@ -169,6 +211,52 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      {/* Admin Monitoring Section */}
+      {userRole === 'admin' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-3 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-bold text-slate-900">Turnos Activos en Tiempo Real</h3>
+              </div>
+              <span className="px-3 py-1 bg-emerald-100 text-emerald-600 text-xs font-bold rounded-full flex items-center gap-1">
+                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                {activeShifts.length} {activeShifts.length === 1 ? 'Cajero' : 'Cajeros'}
+              </span>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {activeShifts.length > 0 ? activeShifts.map((shift) => (
+                <div key={shift.id} className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-slate-200">
+                      <Users className="w-5 h-5 text-slate-400" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-slate-900">{shift.cashierName}</p>
+                      <p className="text-[10px] text-slate-500 font-medium">Inició: {shift.startTime?.toDate().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}</p>
+                    </div>
+                  </div>
+                  <div className="flex justify-between items-center pt-3 border-t border-slate-200">
+                    <div className="flex items-center gap-1 text-xs text-slate-500">
+                      <DollarSign className="w-3 h-3" />
+                      Ventas:
+                    </div>
+                    <span className="text-sm font-bold text-indigo-600">{formatCurrency(shift.totalSales || 0)}</span>
+                  </div>
+                </div>
+              )) : (
+                <div className="col-span-full py-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  <Clock className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                  <p className="text-slate-400 text-sm italic">No hay turnos abiertos en este momento.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Sales Chart */}
@@ -237,9 +325,13 @@ export default function Dashboard() {
                   <p className="text-sm font-semibold text-slate-900 truncate">
                     {sale.items.length} {sale.items.length === 1 ? 'producto' : 'productos'}
                   </p>
-                  <p className="text-xs text-slate-500">
-                    {sale.timestamp?.toDate().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">{sale.cashierName || 'S/N'}</p>
+                    <span className="text-slate-300">•</span>
+                    <p className="text-xs text-slate-500">
+                      {sale.timestamp?.toDate().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
                 </div>
                 <div className="text-right">
                   <p className="text-sm font-bold text-slate-900">{formatCurrency(sale.total)}</p>

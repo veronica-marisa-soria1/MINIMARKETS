@@ -41,7 +41,9 @@ export default function Inventory() {
   const [products, setProducts] = useState<Product[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     barcode: '',
@@ -85,13 +87,20 @@ export default function Inventory() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (window.confirm('¿Estás seguro de que deseas eliminar este producto?')) {
-      try {
-        await deleteDoc(doc(db, 'products', id));
-      } catch (error) {
-        console.error("Error deleting product:", error);
-      }
+  const handleDelete = (product: Product) => {
+    setProductToDelete(product);
+    setIsDeleteModalOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!productToDelete) return;
+    
+    try {
+      await deleteDoc(doc(db, 'products', productToDelete.id));
+      setIsDeleteModalOpen(false);
+      setProductToDelete(null);
+    } catch (error) {
+      console.error("Error deleting product:", error);
     }
   };
 
@@ -209,7 +218,7 @@ export default function Inventory() {
                         <Edit2 className="w-4 h-4" />
                       </button>
                       <button 
-                        onClick={() => handleDelete(product.id)}
+                        onClick={() => handleDelete(product)}
                         className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -348,6 +357,50 @@ export default function Inventory() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+        {/* Delete Confirmation Modal */}
+        {isDeleteModalOpen && productToDelete && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsDeleteModalOpen(false)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-8 text-center">
+                <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <Trash2 className="w-10 h-10 text-red-600" />
+                </div>
+                <h3 className="text-2xl font-bold text-slate-900 mb-2">¿Eliminar Producto?</h3>
+                <p className="text-slate-500 mb-6">
+                  Estás a punto de eliminar <span className="font-bold text-slate-900">"{productToDelete.name}"</span>. 
+                  Esta acción no se puede deshacer.
+                </p>
+                
+                <div className="flex flex-col gap-3">
+                  <button 
+                    onClick={confirmDelete}
+                    className="w-full py-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl transition-colors shadow-lg shadow-red-100"
+                  >
+                    Sí, Eliminar Producto
+                  </button>
+                  <button 
+                    onClick={() => setIsDeleteModalOpen(false)}
+                    className="w-full py-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

@@ -10,12 +10,15 @@ import {
   ShoppingCart, 
   History, 
   LogOut, 
+  Clock,
   Menu, 
   X,
   AlertTriangle,
   TrendingUp,
   DollarSign,
-  PackageCheck
+  PackageCheck,
+  Users,
+  User as UserIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -23,7 +26,7 @@ import {
   signInWithPopup, 
   GoogleAuthProvider, 
   signOut,
-  User
+  User as FirebaseUser
 } from 'firebase/auth';
 import { 
   collection, 
@@ -32,7 +35,9 @@ import {
   orderBy, 
   limit,
   where,
-  Timestamp
+  Timestamp,
+  updateDoc,
+  doc
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { cn, formatCurrency } from './lib/utils';
@@ -42,22 +47,71 @@ import Dashboard from './components/Dashboard';
 import Inventory from './components/Inventory';
 import POS from './components/POS';
 import SalesHistory from './components/SalesHistory';
+import ShiftManager from './components/ShiftManager';
+import UserManagement from './components/UserManagement';
+import { setDoc } from 'firebase/firestore';
 
-type View = 'dashboard' | 'inventory' | 'pos' | 'history';
+type View = 'dashboard' | 'inventory' | 'pos' | 'history' | 'users' | 'shift';
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [userRole, setUserRole] = useState<'admin' | 'staff' | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentView, setCurrentView] = useState<View>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [activeShift, setActiveShift] = useState<any>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setUser(user);
-      setLoading(false);
+      if (user) {
+        // Fetch role from users collection
+        const userDocRef = doc(db, 'users', user.uid);
+        const unsubscribeRole = onSnapshot(userDocRef, async (docSnap) => {
+          if (docSnap.exists()) {
+            setUserRole(docSnap.data().role);
+          } else {
+            // Create user record if it doesn't exist
+            const role = user.email === "soriav449veronica@gmail.com" ? 'admin' : 'staff';
+            await setDoc(userDocRef, {
+              email: user.email,
+              displayName: user.displayName,
+              role: role,
+              uid: user.uid
+            });
+            setUserRole(role);
+          }
+        });
+        setLoading(false);
+        return () => unsubscribeRole();
+      } else {
+        setUserRole(null);
+        setLoading(false);
+      }
     });
     return () => unsubscribe();
   }, []);
+
+  // Check for active shift on login
+  useEffect(() => {
+    if (user) {
+      const q = query(
+        collection(db, 'shifts'),
+        where('userId', '==', user.uid),
+        where('status', '==', 'open'),
+        limit(1)
+      );
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        if (!snapshot.empty) {
+          const shiftDoc = snapshot.docs[0];
+          setActiveShift({ id: shiftDoc.id, ...shiftDoc.data() });
+        } else {
+          setActiveShift(null);
+        }
+      });
+      return () => unsubscribe();
+    }
+  }, [user]);
 
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
@@ -108,6 +162,8 @@ export default function App() {
     { id: 'pos', label: 'Punto de Venta', icon: ShoppingCart },
     { id: 'inventory', label: 'Inventario', icon: Package },
     { id: 'history', label: 'Historial', icon: History },
+    { id: 'shift', label: 'Turno Actual', icon: Clock },
+    ...(userRole === 'admin' ? [{ id: 'users', label: 'Usuarios', icon: Users }] : []),
   ];
 
   return (
@@ -153,7 +209,12 @@ export default function App() {
             />
             {isSidebarOpen && (
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 truncate">{user.displayName}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-medium text-slate-900 truncate">{user.displayName}</p>
+                  {userRole === 'admin' && (
+                    <span className="px-1.5 py-0.5 bg-indigo-100 text-indigo-600 text-[10px] font-bold rounded uppercase">Admin</span>
+                  )}
+                </div>
                 <p className="text-xs text-slate-500 truncate">{user.email}</p>
               </div>
             )}
@@ -181,6 +242,22 @@ export default function App() {
             {isSidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
           <div className="flex items-center gap-4">
+            {activeShift && (
+              <div className="hidden md:flex items-center gap-3 px-4 py-1.5 bg-indigo-50 rounded-xl border border-indigo-100">
+                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                <div className="text-left">
+                  <p className="text-[10px] text-indigo-400 font-bold uppercase leading-none">Turno Activo</p>
+                  <p className="text-xs font-bold text-indigo-700">{activeShift.cashierName}</p>
+                </div>
+                <button 
+                  onClick={() => setCurrentView('shift')}
+                  className="ml-2 p-1.5 hover:bg-indigo-100 rounded-lg text-indigo-600 transition-colors"
+                  title="Ver Turno"
+                >
+                  <Clock className="w-4 h-4" />
+                </button>
+              </div>
+            )}
             <div className="text-right hidden sm:block">
               <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Fecha Actual</p>
               <p className="text-sm font-semibold text-slate-900">
@@ -199,14 +276,34 @@ export default function App() {
               exit={{ opacity: 0, x: -10 }}
               transition={{ duration: 0.2 }}
             >
-              {currentView === 'dashboard' && <Dashboard />}
+              {currentView === 'dashboard' && <Dashboard userRole={userRole} />}
               {currentView === 'inventory' && <Inventory />}
-              {currentView === 'pos' && <POS user={user} />}
+              {currentView === 'pos' && <POS user={user} activeShift={activeShift} />}
               {currentView === 'history' && <SalesHistory />}
+              {currentView === 'users' && <UserManagement />}
+              {currentView === 'shift' && (
+                <ShiftManager 
+                  user={user} 
+                  activeShift={activeShift}
+                  onShiftStarted={(shift) => setActiveShift(shift)}
+                  onShiftClosed={() => setActiveShift(null)}
+                />
+              )}
             </motion.div>
           </AnimatePresence>
         </div>
       </main>
+
+      {/* Blocking Shift Manager when no active shift */}
+      <AnimatePresence>
+        {!activeShift && (
+          <ShiftManager 
+            user={user} 
+            onShiftStarted={(shift) => setActiveShift(shift)}
+            onShiftClosed={() => setActiveShift(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
