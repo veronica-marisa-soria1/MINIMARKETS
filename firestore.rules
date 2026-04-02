@@ -20,7 +20,7 @@ service cloud.firestore {
     // Fields:
     //   - items: list (required)
     //   - total: number (required)
-    //   - paymentMethod: string (required)
+    //   - paymentMethod: string (required) - ['cash', 'credit_card', 'debit_card', 'transfer', 'other']
     //   - timestamp: timestamp (required)
     //   - userId: string (required)
     //   - shiftId: string (required)
@@ -36,6 +36,9 @@ service cloud.firestore {
     //   - initialCash: number (optional)
     //   - finalCash: number (optional)
     //   - totalSales: number (optional)
+    //   - cashSales: number (optional)
+    //   - actualCash: number (optional)
+    //   - difference: number (optional)
     //   - status: string (required)
     //   - userId: string (required)
     //
@@ -51,67 +54,92 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isMasterAdmin() {
+      return isAuthenticated() && (request.auth.token.email == "soriav449veronica@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    function isAuthorized() {
+      return isAuthenticated() && (
+        isMasterAdmin() || 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.authorized == true)
+      );
+    }
+
     function isAdmin() {
       return isAuthenticated() && (
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-        (request.auth.token.email == "soriav449veronica@gmail.com" && request.auth.token.email_verified == true)
+        isMasterAdmin() || 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
       );
     }
 
     function isStaff() {
-      return isAuthenticated() && (
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'staff'] ||
-        isAdmin()
+      return isAuthorized() && (
+        isAdmin() || 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'staff'
       );
     }
 
     // Validation Functions
+    function isValidUser(data) {
+      return data.email is string && data.email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$") &&
+             data.role in ['admin', 'staff'];
+    }
+
     function isValidProduct(data) {
       return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              data.price is number && data.price >= 0 &&
              data.stock is number &&
-             data.updatedAt is timestamp;
+             (!('updatedAt' in data) || data.updatedAt is timestamp);
     }
 
     function isValidSale(data) {
       return data.items is list && data.items.size() > 0 &&
-             data.total is number && data.total >= 0 &&
+             data.total is number &&
              data.timestamp is timestamp &&
              data.userId == request.auth.uid &&
              data.shiftId is string &&
-             data.amountPaid is number && data.amountPaid >= 0 &&
-             data.change is number && data.change >= 0;
+             data.amountPaid is number &&
+             data.change is number &&
+             data.paymentMethod in ['cash', 'credit_card', 'debit_card', 'transfer', 'other'];
     }
 
     function isValidShift(data) {
       return data.cashierName is string && data.cashierName.size() > 0 &&
              data.startTime is timestamp &&
              data.status in ['open', 'closed'] &&
-             data.userId == request.auth.uid;
+             (!('initialCash' in data) || data.initialCash is number) &&
+             (!('finalCash' in data) || data.finalCash is number) &&
+             (!('totalSales' in data) || data.totalSales is number) &&
+             (!('cashSales' in data) || data.cashSales is number) &&
+             (!('actualCash' in data) || data.actualCash is number) &&
+             (!('difference' in data) || data.difference is number);
     }
 
     // Rules
     match /users/{userId} {
       allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
-      allow write: if isAdmin();
+      allow create: if isAuthenticated() && (request.auth.uid == userId || isAdmin()) && isValidUser(request.resource.data);
+      allow update: if isAdmin() && isValidUser(request.resource.data);
+      allow delete: if isAdmin();
     }
 
     match /products/{productId} {
-      allow read: if isAuthenticated();
-      allow create, update: if isStaff() && isValidProduct(request.resource.data);
+      allow read: if isAuthorized();
+      allow create, update: if (isStaff() && isValidProduct(request.resource.data)) || isAdmin();
       allow delete: if isAdmin();
     }
 
     match /sales/{saleId} {
-      allow read: if isStaff();
+      allow read: if isAuthorized();
       allow create: if isStaff() && isValidSale(request.resource.data);
-      allow update, delete: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
 
     match /shifts/{shiftId} {
-      allow read: if isStaff();
-      allow create: if isStaff() && isValidShift(request.resource.data);
-      allow update: if isStaff() && isValidShift(request.resource.data);
+      allow read: if isAuthorized();
+      allow create: if isStaff() && isValidShift(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow update: if (isStaff() && request.auth.uid == resource.data.userId && isValidShift(request.resource.data)) || isAdmin();
       allow delete: if isAdmin();
     }
   }

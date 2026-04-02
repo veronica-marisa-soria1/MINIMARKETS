@@ -10,10 +10,12 @@ import {
   CreditCard,
   Banknote,
   Smartphone,
+  CheckCircle2,
   X,
   RotateCcw,
   DollarSign,
-  TrendingUp
+  TrendingUp,
+  Printer
 } from 'lucide-react';
 import { 
   collection, 
@@ -22,26 +24,30 @@ import {
   orderBy, 
   limit,
   Timestamp,
-  where
+  where,
+  updateDoc,
+  doc,
+  increment
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { formatCurrency, cn } from '../lib/utils';
+import { formatCurrency, cn, handleFirestoreError, OperationType } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface Sale {
   id: string;
   items: any[];
   total: number;
-  paymentMethod: 'cash' | 'card' | 'transfer';
+  paymentMethod: 'cash' | 'credit_card' | 'debit_card' | 'transfer' | 'other';
   timestamp: Timestamp;
   userId: string;
   cashierName?: string;
   shiftId?: string;
   amountPaid?: number;
   change?: number;
+  voided?: boolean;
 }
 
-export default function SalesHistory() {
+export default function SalesHistory({ userRole }: { userRole: 'admin' | 'staff' | null }) {
   const [sales, setSales] = useState<Sale[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedSale, setExpandedSale] = useState<string | null>(null);
@@ -75,6 +81,8 @@ export default function SalesHistory() {
         salesData.push({ id: doc.id, ...doc.data() } as Sale);
       });
       setSales(salesData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'sales');
     });
     return () => unsubscribe();
   }, [startDate, endDate]);
@@ -124,18 +132,43 @@ export default function SalesHistory() {
   const getPaymentIcon = (method: string) => {
     switch (method) {
       case 'cash': return <Banknote className="w-4 h-4" />;
-      case 'card': return <CreditCard className="w-4 h-4" />;
+      case 'credit_card':
+      case 'debit_card': return <CreditCard className="w-4 h-4" />;
       case 'transfer': return <Smartphone className="w-4 h-4" />;
+      case 'other': return <CheckCircle2 className="w-4 h-4" />;
       default: return <History className="w-4 h-4" />;
     }
   };
 
+  const getPaymentLabel = (method: string) => {
+    switch (method) {
+      case 'cash': return 'Efectivo';
+      case 'credit_card': return 'T. Crédito';
+      case 'debit_card': return 'T. Débito';
+      case 'transfer': return 'Transf.';
+      case 'other': return 'Otro';
+      default: return method;
+    }
+  };
+
+  const [saleToPrint, setSaleToPrint] = useState<Sale | null>(null);
+  const [saleToVoid, setSaleToVoid] = useState<Sale | null>(null);
+  const [isVoiding, setIsVoiding] = useState(false);
+
+  const handlePrint = (sale: Sale) => {
+    setSaleToPrint(sale);
+    // Wait for state to update and render the hidden receipt
+    setTimeout(() => {
+      window.print();
+    }, 100);
+  };
+
   const filteredSales = sales.filter(s => 
-    s.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    s.paymentMethod.toLowerCase().includes(searchTerm.toLowerCase())
+    (s.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    s.paymentMethod.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
-  const summary = filteredSales.reduce((acc, sale) => {
+  const summary = filteredSales.filter(s => !s.voided).reduce((acc, sale) => {
     acc.totalSales += sale.total;
     sale.items.forEach(item => {
       acc.totalCost += (item.cost || 0) * item.quantity;
@@ -143,6 +176,52 @@ export default function SalesHistory() {
     });
     return acc;
   }, { totalSales: 0, totalCost: 0, totalItems: 0 });
+
+  const handleVoidSale = async (sale: Sale) => {
+    setSaleToVoid(sale);
+  };
+
+  const confirmVoidSale = async () => {
+    if (!saleToVoid) return;
+    setIsVoiding(true);
+
+    try {
+      // 1. Mark sale as voided
+      await updateDoc(doc(db, 'sales', saleToVoid.id), {
+        voided: true,
+        voidedAt: Timestamp.now()
+      });
+
+      // 2. Restore stock
+      for (const item of saleToVoid.items) {
+        await updateDoc(doc(db, 'products', item.productId), {
+          stock: increment(item.quantity),
+          updatedAt: Timestamp.now()
+        });
+      }
+
+      // 3. Update shift totals
+      if (saleToVoid.shiftId) {
+        const shiftUpdate: any = {
+          totalSales: increment(-saleToVoid.total)
+        };
+        if (saleToVoid.paymentMethod === 'cash') {
+          shiftUpdate.cashSales = increment(-saleToVoid.total);
+        }
+        await updateDoc(doc(db, 'shifts', saleToVoid.shiftId), shiftUpdate);
+      }
+
+      setExpandedSale(null);
+      setSaleToVoid(null);
+    } catch (error: any) {
+      if (error.code === 'permission-denied') {
+        handleFirestoreError(error, OperationType.UPDATE, 'Void Sale');
+      }
+      console.error("Error voiding sale:", error);
+    } finally {
+      setIsVoiding(false);
+    }
+  };
 
   const totalProfit = summary.totalSales - summary.totalCost;
 
@@ -271,7 +350,7 @@ export default function SalesHistory() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-col">
-                        <span className="text-sm font-semibold text-slate-900">
+                        <span className={cn("text-sm font-semibold", sale.voided ? "text-slate-400 line-through" : "text-slate-900")}>
                           {sale.timestamp?.toDate().toLocaleDateString('es-AR')}
                         </span>
                         <span className="text-xs text-slate-500">
@@ -283,16 +362,17 @@ export default function SalesHistory() {
                       <span className="text-sm font-medium text-slate-700">{sale.cashierName || 'N/A'}</span>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2 text-xs font-bold text-slate-600 uppercase">
+                      <div className={cn("flex items-center gap-2 text-xs font-bold uppercase", sale.voided ? "text-slate-300" : "text-slate-600")}>
                         {getPaymentIcon(sale.paymentMethod)}
-                        {sale.paymentMethod}
+                        {getPaymentLabel(sale.paymentMethod)}
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-sm text-slate-600">{sale.items.length} items</span>
+                      <span className={cn("text-sm", sale.voided ? "text-slate-300" : "text-slate-600")}>{sale.items.length} items</span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="font-bold text-slate-900">{formatCurrency(sale.total)}</span>
+                      <span className={cn("font-bold", sale.voided ? "text-slate-300 line-through" : "text-slate-900")}>{formatCurrency(sale.total)}</span>
+                      {sale.voided && <span className="ml-2 px-1.5 py-0.5 bg-red-50 text-red-600 text-[10px] font-bold rounded uppercase">Anulada</span>}
                     </td>
                     <td className="px-6 py-4 text-right">
                       <button className="p-2 text-slate-400 hover:text-indigo-600 transition-colors">
@@ -340,9 +420,39 @@ export default function SalesHistory() {
                                       </>
                                     )}
                                   </div>
-                                  <div className="text-right">
-                                    <p className="text-xs text-slate-500 font-bold uppercase">Total Final</p>
-                                    <p className="text-lg font-bold text-indigo-600">{formatCurrency(sale.total)}</p>
+                                  <div className="text-right flex flex-col items-end gap-2">
+                                    <div>
+                                      <p className="text-xs text-slate-500 font-bold uppercase">Total Final</p>
+                                      <p className={cn("text-lg font-bold", sale.voided ? "text-slate-400 line-through" : "text-indigo-600")}>
+                                        {formatCurrency(sale.total)}
+                                      </p>
+                                    </div>
+                                    {!sale.voided && (
+                                      <div className="flex gap-2">
+                                        <button 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handlePrint(sale);
+                                          }}
+                                          className="px-3 py-1.5 bg-indigo-50 text-indigo-600 text-xs font-bold rounded-lg hover:bg-indigo-100 transition-colors flex items-center gap-2"
+                                        >
+                                          <Printer className="w-4 h-4" />
+                                          Reimprimir
+                                        </button>
+                                        {userRole === 'admin' && (
+                                          <button 
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleVoidSale(sale);
+                                            }}
+                                            className="px-3 py-1.5 bg-red-50 text-red-600 text-xs font-bold rounded-lg hover:bg-red-100 transition-colors flex items-center gap-2"
+                                          >
+                                            <X className="w-4 h-4" />
+                                            Anular Venta
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -364,6 +474,110 @@ export default function SalesHistory() {
           </div>
         )}
       </div>
+
+      {/* Void Confirmation Modal */}
+      <AnimatePresence>
+        {saleToVoid && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="max-w-md w-full bg-white rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-8 border-b border-slate-100 text-center">
+                <div className="w-16 h-16 bg-red-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                  <RotateCcw className="w-8 h-8 text-red-600" />
+                </div>
+                <h3 className="text-2xl font-bold text-slate-900">Anular Venta</h3>
+                <p className="text-slate-500 mt-2">
+                  ¿Estás seguro de que deseas anular la venta <span className="font-mono font-bold">#{saleToVoid.id.slice(-8).toUpperCase()}</span>?
+                </p>
+                <div className="mt-4 p-4 bg-red-50 rounded-2xl text-left">
+                  <p className="text-xs text-red-700 font-medium">Consecuencias:</p>
+                  <ul className="text-xs text-red-600 list-disc list-inside mt-1 space-y-1">
+                    <li>El stock de los productos será restaurado.</li>
+                    <li>La venta no contará en los totales del turno.</li>
+                    <li>Esta acción no se puede deshacer.</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="p-8 bg-slate-50 border-t border-slate-100 flex gap-3">
+                <button 
+                  onClick={() => setSaleToVoid(null)}
+                  disabled={isVoiding}
+                  className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-100 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={confirmVoidSale}
+                  disabled={isVoiding}
+                  className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-colors flex items-center justify-center gap-2"
+                >
+                  {isVoiding ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Confirmar Anulación'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Hidden Printable Receipt for Reprinting */}
+      {saleToPrint && (
+        <div id="printable-receipt" className="hidden print:block fixed inset-0 bg-white z-[9999] p-8 text-black font-mono text-sm">
+          <div className="max-w-[300px] mx-auto space-y-4">
+            <div className="text-center border-b border-dashed border-black pb-4">
+              <h1 className="text-xl font-bold uppercase">Minimark AyB</h1>
+              <p className="text-xs">*** REIMPRESIÓN ***</p>
+              <p className="text-xs">¡Gracias por su compra!</p>
+              <p className="text-[10px] mt-1">{saleToPrint.timestamp?.toDate().toLocaleString('es-AR')}</p>
+            </div>
+            
+            <div className="space-y-1">
+              <div className="flex justify-between font-bold border-b border-dashed border-black pb-1 mb-1">
+                <span>Producto</span>
+                <span>Subtotal</span>
+              </div>
+              {saleToPrint.items.map((item: any, idx: number) => (
+                <div key={idx} className="flex justify-between text-[10px]">
+                  <span className="truncate pr-2">{item.quantity}x {item.name}</span>
+                  <span>{formatCurrency(item.subtotal)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t border-dashed border-black pt-2 space-y-1">
+              <div className="flex justify-between font-bold text-base">
+                <span>TOTAL</span>
+                <span>{formatCurrency(saleToPrint.total)}</span>
+              </div>
+              <div className="flex justify-between text-[10px]">
+                <span>Método:</span>
+                <span className="uppercase">{saleToPrint.paymentMethod}</span>
+              </div>
+              {saleToPrint.paymentMethod === 'cash' && saleToPrint.amountPaid !== undefined && (
+                <>
+                  <div className="flex justify-between text-[10px]">
+                    <span>Recibido:</span>
+                    <span>{formatCurrency(saleToPrint.amountPaid)}</span>
+                  </div>
+                  <div className="flex justify-between text-[10px]">
+                    <span>Vuelto:</span>
+                    <span>{formatCurrency(saleToPrint.change || 0)}</span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="text-center pt-4 border-t border-dashed border-black">
+              <p className="text-[10px]">Cajero: {saleToPrint.cashierName}</p>
+              <p className="text-[8px] mt-1">ID: {saleToPrint.id}</p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -19,7 +19,7 @@ import {
   limit
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, cn, handleFirestoreError, OperationType } from '../lib/utils';
 import { 
   BarChart, 
   Bar, 
@@ -66,6 +66,8 @@ export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | 
       });
       setProductsMap(pMap);
       setStats(prev => ({ ...prev, totalProducts: total, lowStock: low }));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'products');
     });
 
     // Today's Sales & Profit
@@ -97,6 +99,8 @@ export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | 
         todaySales: totalSales,
         todayProfit: totalSales - totalCost
       }));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'sales');
     });
 
     // Recent Sales
@@ -111,6 +115,8 @@ export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | 
         sales.push({ id: doc.id, ...doc.data() });
       });
       setRecentSales(sales);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'sales');
     });
 
     // Active Shifts (Admin only)
@@ -126,6 +132,8 @@ export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | 
           shifts.push({ id: doc.id, ...doc.data() });
         });
         setActiveShifts(shifts);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, 'shifts');
       });
     }
 
@@ -181,7 +189,45 @@ export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | 
       trend: '+3 nuevos',
       trendUp: true
     },
+    ...(userRole === 'admin' ? [{
+      label: 'Gestión Personal',
+      value: stats.admins + stats.staff,
+      icon: Users,
+      color: 'bg-purple-600',
+      trend: stats.pending > 0 ? `${stats.pending} pendientes` : 'Al día',
+      trendUp: stats.pending === 0,
+      isLink: true
+    }] : [])
   ];
+
+  // Add stats for admins
+  const [adminStats, setAdminStats] = useState({ admins: 0, staff: 0, pending: 0 });
+  useEffect(() => {
+    if (userRole === 'admin') {
+      const q = query(collection(db, 'users'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        let a = 0, s = 0, p = 0;
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          if (data.role === 'admin') a++;
+          if (data.role === 'staff') s++;
+          if (!data.authorized) p++;
+        });
+        setAdminStats({ admins: a, staff: s, pending: p });
+      });
+      return () => unsubscribe();
+    }
+  }, [userRole]);
+
+  // Update stats with admin counts if needed
+  const finalStats = { ...stats, ...adminStats };
+
+  const finalCards = cards.map(c => {
+    if (c.label === 'Gestión Personal') {
+      return { ...c, value: finalStats.admins + finalStats.staff, trend: finalStats.pending > 0 ? `${finalStats.pending} pendientes` : 'Al día' };
+    }
+    return c;
+  });
 
   return (
     <div className="space-y-8">
@@ -192,7 +238,7 @@ export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | 
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {cards.map((card, idx) => (
+        {finalCards.map((card, idx) => (
           <div key={idx} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
             <div className="flex items-start justify-between mb-4">
               <div className={cn("p-3 rounded-xl text-white", card.color)}>
@@ -215,7 +261,50 @@ export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | 
       {/* Admin Monitoring Section */}
       {userRole === 'admin' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-3 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+          {/* Quick Management Menu */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between">
+            <div>
+              <div className="flex items-center gap-2 mb-6">
+                <Users className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-bold text-slate-900">Menú de Gestión</h3>
+              </div>
+              <div className="space-y-3">
+                <button 
+                  onClick={() => window.dispatchEvent(new CustomEvent('changeView', { detail: 'users' }))}
+                  className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-indigo-50 rounded-xl transition-all group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center text-indigo-600 border border-slate-100 group-hover:border-indigo-200">
+                      <Users className="w-5 h-5" />
+                    </div>
+                    <div className="text-left">
+                      <p className="text-sm font-bold text-slate-900">Gestionar Cajeros</p>
+                      <p className="text-[10px] text-slate-500 font-medium">Administra el personal de ventas</p>
+                    </div>
+                  </div>
+                  <ArrowUpRight className="w-4 h-4 text-slate-300 group-hover:text-indigo-600" />
+                </button>
+                <button 
+                  onClick={() => window.dispatchEvent(new CustomEvent('changeView', { detail: 'inventory' }))}
+                  className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-indigo-50 rounded-xl transition-all group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center text-blue-600 border border-slate-100 group-hover:border-blue-200">
+                      <Package className="w-5 h-5" />
+                    </div>
+                    <div className="text-left">
+                      <p className="text-sm font-bold text-slate-900">Gestionar Inventario</p>
+                      <p className="text-[10px] text-slate-500 font-medium">Control de stock y precios</p>
+                    </div>
+                  </div>
+                  <ArrowUpRight className="w-4 h-4 text-slate-300 group-hover:text-blue-600" />
+                </button>
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-400 font-medium mt-6 italic">* Acceso exclusivo para administradores</p>
+          </div>
+
+          <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-2">
                 <Users className="w-5 h-5 text-indigo-600" />
@@ -227,7 +316,7 @@ export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | 
               </span>
             </div>
             
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {activeShifts.length > 0 ? activeShifts.map((shift) => (
                 <div key={shift.id} className="p-4 bg-slate-50 rounded-xl border border-slate-100">
                   <div className="flex items-center gap-3 mb-3">
@@ -350,8 +439,4 @@ export default function Dashboard({ userRole }: { userRole: 'admin' | 'staff' | 
       </div>
     </div>
   );
-}
-
-function cn(...inputs: any[]) {
-  return inputs.filter(Boolean).join(' ');
 }

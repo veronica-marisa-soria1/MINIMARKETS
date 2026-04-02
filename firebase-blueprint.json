@@ -37,13 +37,15 @@
           }
         },
         "total": { "type": "number" },
-        "paymentMethod": { "type": "string", "enum": ["cash", "card", "transfer"] },
+        "paymentMethod": { "type": "string", "enum": ["cash", "credit_card", "debit_card", "transfer", "other"] },
         "timestamp": { "type": "string", "format": "date-time" },
         "userId": { "type": "string" },
         "shiftId": { "type": "string" },
         "cashierName": { "type": "string" },
         "amountPaid": { "type": "number" },
-        "change": { "type": "number" }
+        "change": { "type": "number" },
+        "voided": { "type": "boolean" },
+        "voidedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["items", "total", "timestamp", "shiftId"]
     },
@@ -59,6 +61,9 @@
         "initialCash": { "type": "number" },
         "finalCash": { "type": "number" },
         "totalSales": { "type": "number" },
+        "cashSales": { "type": "number" },
+        "actualCash": { "type": "number" },
+        "difference": { "type": "number" },
         "status": { "type": "string", "enum": ["open", "closed"] },
         "userId": { "type": "string" }
       },
@@ -72,7 +77,8 @@
         "uid": { "type": "string" },
         "email": { "type": "string" },
         "displayName": { "type": "string" },
-        "role": { "type": "string", "enum": ["admin", "staff"] }
+        "role": { "type": "string", "enum": ["admin", "staff"] },
+        "authorized": { "type": "boolean" }
       }
     }
   },

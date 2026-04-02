@@ -9,6 +9,7 @@ import {
   Banknote, 
   Smartphone,
   CheckCircle2,
+  Printer,
   X
 } from 'lucide-react';
 import { 
@@ -23,7 +24,7 @@ import {
   increment
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { formatCurrency, cn } from '../lib/utils';
+import { formatCurrency, cn, handleFirestoreError, OperationType } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface Product {
@@ -42,11 +43,12 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
   const [products, setProducts] = useState<Product[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'transfer'>('cash');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit_card' | 'debit_card' | 'transfer' | 'other'>('cash');
   const [amountPaid, setAmountPaid] = useState<number>(0);
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [lastSaleId, setLastSaleId] = useState('');
+  const [lastSaleData, setLastSaleData] = useState<any>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -57,6 +59,8 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
         prods.push({ id: doc.id, ...doc.data() } as Product);
       });
       setProducts(prods);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'products');
     });
 
     // Auto-focus search input on mount
@@ -173,19 +177,32 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
         });
       }
 
-      // 3. Update Shift total sales
-      await updateDoc(doc(db, 'shifts', activeShift.id), {
+      // 3. Update Shift total sales and cash sales if applicable
+      const shiftUpdate: any = {
         totalSales: increment(total)
-      });
+      };
+      if (paymentMethod === 'cash') {
+        shiftUpdate.cashSales = increment(total);
+      }
+      await updateDoc(doc(db, 'shifts', activeShift.id), shiftUpdate);
 
       setLastSaleId(saleRef.id);
+      setLastSaleData(saleData);
       setIsSuccessModalOpen(true);
       setIsPreviewModalOpen(false);
       setCart([]);
       setAmountPaid(0);
-    } catch (error) {
+    } catch (error: any) {
+      if (error.code === 'permission-denied') {
+        handleFirestoreError(error, OperationType.WRITE, 'POS operations');
+      }
       console.error("Error completing sale:", error);
     }
+  };
+
+  const handlePrintReceipt = () => {
+    if (!lastSaleData) return;
+    window.print();
   };
 
   const filteredProducts = searchTerm.length > 0 
@@ -193,7 +210,7 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
         p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         p.barcode?.includes(searchTerm)
       )
-    : [];
+    : products; // Show all products by default
 
   return (
     <div className="h-[calc(100vh-12rem)] flex flex-col lg:flex-row gap-6">
@@ -259,12 +276,12 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
                 No se encontraron productos con ese nombre o código.
               </div>
             )}
-            {searchTerm.length === 0 && (
+            {searchTerm.length === 0 && filteredProducts.length === 0 && (
               <div className="col-span-full py-12 text-center">
                 <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
                   <ShoppingCart className="w-8 h-8 text-slate-300" />
                 </div>
-                <p className="text-slate-400 font-medium">Busca productos para empezar la venta.</p>
+                <p className="text-slate-400 font-medium">No hay productos en el inventario.</p>
               </div>
             )}
           </div>
@@ -363,11 +380,13 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-5 gap-2">
               {[
                 { id: 'cash', icon: Banknote, label: 'Efectivo' },
-                { id: 'card', icon: CreditCard, label: 'Tarjeta' },
-                { id: 'transfer', icon: Smartphone, label: 'Transf.' }
+                { id: 'credit_card', icon: CreditCard, label: 'T. Crédito' },
+                { id: 'debit_card', icon: CreditCard, label: 'T. Débito' },
+                { id: 'transfer', icon: Smartphone, label: 'Transf.' },
+                { id: 'other', icon: CheckCircle2, label: 'Otro' }
               ].map(method => (
                 <button
                   key={method.id}
@@ -380,7 +399,7 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
                   )}
                 >
                   <method.icon className="w-5 h-5" />
-                  <span className="text-[10px] font-bold uppercase">{method.label}</span>
+                  <span className="text-[8px] font-bold uppercase truncate w-full">{method.label}</span>
                 </button>
               ))}
             </div>
@@ -460,13 +479,18 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm">
                         {paymentMethod === 'cash' && <Banknote className="w-5 h-5 text-indigo-600" />}
-                        {paymentMethod === 'card' && <CreditCard className="w-5 h-5 text-indigo-600" />}
+                        {(paymentMethod === 'credit_card' || paymentMethod === 'debit_card') && <CreditCard className="w-5 h-5 text-indigo-600" />}
                         {paymentMethod === 'transfer' && <Smartphone className="w-5 h-5 text-indigo-600" />}
+                        {paymentMethod === 'other' && <CheckCircle2 className="w-5 h-5 text-indigo-600" />}
                       </div>
                       <div>
                         <p className="text-[10px] text-indigo-400 font-bold uppercase leading-none">Método de Pago</p>
                         <p className="text-sm font-bold text-indigo-900">
-                          {paymentMethod === 'cash' ? 'Efectivo' : paymentMethod === 'card' ? 'Tarjeta' : 'Transferencia'}
+                          {paymentMethod === 'cash' && 'Efectivo'}
+                          {paymentMethod === 'credit_card' && 'Tarjeta de Crédito'}
+                          {paymentMethod === 'debit_card' && 'Tarjeta de Débito'}
+                          {paymentMethod === 'transfer' && 'Transferencia'}
+                          {paymentMethod === 'other' && 'Otro'}
                         </p>
                       </div>
                     </div>
@@ -548,25 +572,88 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
                 </div>
                 <div className="flex justify-between font-bold text-lg">
                   <span className="text-slate-900">Total:</span>
-                  <span className="text-indigo-600">{formatCurrency(total)}</span>
+                  <span className="text-indigo-600">{formatCurrency(lastSaleData?.total || 0)}</span>
                 </div>
-                {paymentMethod === 'cash' && (
+                {lastSaleData?.paymentMethod === 'cash' && (
                   <div className="flex justify-between text-sm mt-2 pt-2 border-t border-slate-100">
                     <span className="text-slate-500">Vuelto entregado:</span>
-                    <span className="font-bold text-emerald-600">{formatCurrency(change)}</span>
+                    <span className="font-bold text-emerald-600">{formatCurrency(lastSaleData.change || 0)}</span>
                   </div>
                 )}
               </div>
-              <button 
-                onClick={() => setIsSuccessModalOpen(false)}
-                className="w-full py-4 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-2xl transition-colors"
-              >
-                Nueva Venta
-              </button>
+              <div className="flex flex-col gap-3">
+                <button 
+                  onClick={handlePrintReceipt}
+                  className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-colors flex items-center justify-center gap-2"
+                >
+                  <Printer className="w-5 h-5" />
+                  Imprimir Recibo
+                </button>
+                <button 
+                  onClick={() => setIsSuccessModalOpen(false)}
+                  className="w-full py-4 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-2xl transition-colors"
+                >
+                  Nueva Venta
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+
+      {/* Hidden Printable Receipt */}
+      {lastSaleData && (
+        <div id="printable-receipt" className="hidden print:block fixed inset-0 bg-white z-[9999] p-8 text-black font-mono text-sm">
+          <div className="max-w-[300px] mx-auto space-y-4">
+            <div className="text-center border-b border-dashed border-black pb-4">
+              <h1 className="text-xl font-bold uppercase">Minimark AyB</h1>
+              <p className="text-xs">¡Gracias por su compra!</p>
+              <p className="text-[10px] mt-1">{lastSaleData.timestamp?.toDate().toLocaleString('es-AR')}</p>
+            </div>
+            
+            <div className="space-y-1">
+              <div className="flex justify-between font-bold border-b border-dashed border-black pb-1 mb-1">
+                <span>Producto</span>
+                <span>Subtotal</span>
+              </div>
+              {lastSaleData.items.map((item: any, idx: number) => (
+                <div key={idx} className="flex justify-between text-[10px]">
+                  <span className="truncate pr-2">{item.quantity}x {item.name}</span>
+                  <span>{formatCurrency(item.subtotal)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t border-dashed border-black pt-2 space-y-1">
+              <div className="flex justify-between font-bold text-base">
+                <span>TOTAL</span>
+                <span>{formatCurrency(lastSaleData.total)}</span>
+              </div>
+              <div className="flex justify-between text-[10px]">
+                <span>Método:</span>
+                <span className="uppercase">{lastSaleData.paymentMethod}</span>
+              </div>
+              {lastSaleData.paymentMethod === 'cash' && (
+                <>
+                  <div className="flex justify-between text-[10px]">
+                    <span>Recibido:</span>
+                    <span>{formatCurrency(lastSaleData.amountPaid)}</span>
+                  </div>
+                  <div className="flex justify-between text-[10px]">
+                    <span>Vuelto:</span>
+                    <span>{formatCurrency(lastSaleData.change)}</span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="text-center pt-4 border-t border-dashed border-black">
+              <p className="text-[10px]">Cajero: {lastSaleData.cashierName}</p>
+              <p className="text-[8px] mt-1">ID: {lastSaleId}</p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

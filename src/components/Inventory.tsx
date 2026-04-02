@@ -23,7 +23,7 @@ import {
   Timestamp
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, handleFirestoreError, OperationType } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface Product {
@@ -37,7 +37,7 @@ interface Product {
   minStock: number;
 }
 
-export default function Inventory() {
+export default function Inventory({ userRole }: { userRole: 'admin' | 'staff' | null }) {
   const [products, setProducts] = useState<Product[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -54,6 +54,8 @@ export default function Inventory() {
     minStock: 5
   });
 
+  const isAdmin = userRole === 'admin';
+
   useEffect(() => {
     const q = query(collection(db, 'products'), orderBy('name', 'asc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -62,6 +64,8 @@ export default function Inventory() {
         prods.push({ id: doc.id, ...doc.data() } as Product);
       });
       setProducts(prods);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'products');
     });
     return () => unsubscribe();
   }, []);
@@ -131,17 +135,19 @@ export default function Inventory() {
           <h2 className="text-2xl font-bold text-slate-900">Inventario</h2>
           <p className="text-slate-500 text-sm">Gestiona tus productos y niveles de stock.</p>
         </div>
-        <button 
-          onClick={() => {
-            setEditingProduct(null);
-            setFormData({ name: '', barcode: '', category: '', price: 0, cost: 0, stock: 0, minStock: 5 });
-            setIsModalOpen(true);
-          }}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors"
-        >
-          <Plus className="w-5 h-5" />
-          Nuevo Producto
-        </button>
+        {isAdmin && (
+          <button 
+            onClick={() => {
+              setEditingProduct(null);
+              setFormData({ name: '', barcode: '', category: '', price: 0, cost: 0, stock: 0, minStock: 5 });
+              setIsModalOpen(true);
+            }}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors"
+          >
+            <Plus className="w-5 h-5" />
+            Nuevo Producto
+          </button>
+        )}
       </div>
 
       {/* Filters & Search */}
@@ -210,20 +216,22 @@ export default function Inventory() {
                     )}
                   </td>
                   <td className="px-6 py-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button 
-                        onClick={() => openEdit(product)}
-                        className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={() => handleDelete(product)}
-                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                    {isAdmin && (
+                      <div className="flex justify-end gap-2">
+                        <button 
+                          onClick={() => openEdit(product)}
+                          className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleDelete(product)}
+                          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

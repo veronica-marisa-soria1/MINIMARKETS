@@ -1,1 +1,33 @@
 @import "tailwindcss";
+
+@media print {
+  @page {
+    margin: 0;
+    size: auto;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #printable-receipt, #printable-receipt * {
+    visibility: visible;
+  }
+  #printable-receipt {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-width: 80mm; /* Standard thermal printer width */
+    margin: 0;
+    padding: 10px;
+    display: block !important;
+    background: white;
+    color: black;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12px;
+    line-height: 1.2;
+  }
+  /* Hide UI elements during print */
+  .no-print {
+    display: none !important;
+  }
+}

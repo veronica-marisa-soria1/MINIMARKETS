@@ -37,10 +37,13 @@ import {
   where,
   Timestamp,
   updateDoc,
-  doc
+  doc,
+  getDocs,
+  deleteDoc,
+  setDoc
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import { cn, formatCurrency } from './lib/utils';
+import { cn, formatCurrency, handleFirestoreError, OperationType } from './lib/utils';
 
 // Views
 import Dashboard from './components/Dashboard';
@@ -49,7 +52,6 @@ import POS from './components/POS';
 import SalesHistory from './components/SalesHistory';
 import ShiftManager from './components/ShiftManager';
 import UserManagement from './components/UserManagement';
-import { setDoc } from 'firebase/firestore';
 
 type View = 'dashboard' | 'inventory' | 'pos' | 'history' | 'users' | 'shift';
 
@@ -62,29 +64,120 @@ export default function App() {
   const [activeShift, setActiveShift] = useState<any>(null);
 
   useEffect(() => {
+    const handleViewChange = (e: any) => {
+      if (e.detail) setCurrentView(e.detail as View);
+    };
+    window.addEventListener('changeView', handleViewChange);
+    return () => window.removeEventListener('changeView', handleViewChange);
+  }, []);
+
+  useEffect(() => {
+    if (!loading && userRole) {
+      if (userRole === 'staff' && currentView === 'dashboard') {
+        setCurrentView('pos');
+      }
+    }
+  }, [userRole, loading]);
+
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setUser(user);
       if (user) {
+        const isMaster = user.email === "soriav449veronica@gmail.com";
+        
         // Fetch role from users collection
         const userDocRef = doc(db, 'users', user.uid);
         const unsubscribeRole = onSnapshot(userDocRef, async (docSnap) => {
           if (docSnap.exists()) {
-            setUserRole(docSnap.data().role);
+            const data = docSnap.data();
+            // Master admin is ALWAYS authorized and ALWAYS admin
+            if (isMaster) {
+              setUserRole('admin');
+              // Auto-fix document if it's incorrect
+              if (!data.authorized || data.role !== 'admin') {
+                await updateDoc(userDocRef, { authorized: true, role: 'admin' });
+              }
+            } else if (data.authorized) {
+              setUserRole(data.role);
+            } else {
+              setUserRole(null);
+            }
+            setLoading(false);
           } else {
-            // Create user record if it doesn't exist
-            const role = user.email === "soriav449veronica@gmail.com" ? 'admin' : 'staff';
-            await setDoc(userDocRef, {
-              email: user.email,
-              displayName: user.displayName,
-              role: role,
-              uid: user.uid
-            });
-            setUserRole(role);
+            // Master admin bypasses pre-auth check to avoid permission errors on getDocs
+            if (isMaster) {
+              const role = 'admin';
+              await setDoc(userDocRef, {
+                email: user.email,
+                displayName: user.displayName,
+                role: role,
+                uid: user.uid,
+                authorized: true
+              });
+              setUserRole(role);
+              setLoading(false);
+              return;
+            }
+
+            // Check if there is a pre-authorized user by email (only for non-masters)
+            try {
+              const usersRef = collection(db, 'users');
+              const q = query(usersRef, where('email', '==', user.email));
+              const querySnapshot = await getDocs(q);
+              
+              if (!querySnapshot.empty) {
+                const preAuthDoc = querySnapshot.docs[0];
+                const preAuthData = preAuthDoc.data();
+                
+                await setDoc(userDocRef, {
+                  ...preAuthData,
+                  uid: user.uid,
+                  displayName: user.displayName,
+                  preAuthorized: false
+                });
+                
+                if (preAuthDoc.id !== user.uid) {
+                  await deleteDoc(doc(db, 'users', preAuthDoc.id));
+                }
+                
+                if (preAuthData.authorized) {
+                  setUserRole(preAuthData.role);
+                } else {
+                  setUserRole(null);
+                }
+              } else {
+                const role = 'staff';
+                const authorized = false;
+                
+                await setDoc(userDocRef, {
+                  email: user.email,
+                  displayName: user.displayName,
+                  role: role,
+                  uid: user.uid,
+                  authorized: authorized
+                });
+                setUserRole(null);
+              }
+            } catch (e) {
+              console.error("Error checking pre-auth:", e);
+              // Fallback: create unauthorized record
+              await setDoc(userDocRef, {
+                email: user.email,
+                displayName: user.displayName,
+                role: 'staff',
+                uid: user.uid,
+                authorized: false
+              });
+              setUserRole(null);
+            }
+            setLoading(false);
           }
+        }, (error) => {
+          handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
         });
-        setLoading(false);
         return () => unsubscribeRole();
-      } else {
+      }
+ else {
         setUserRole(null);
         setLoading(false);
       }
@@ -94,7 +187,7 @@ export default function App() {
 
   // Check for active shift on login
   useEffect(() => {
-    if (user) {
+    if (user && userRole) {
       const q = query(
         collection(db, 'shifts'),
         where('userId', '==', user.uid),
@@ -108,10 +201,12 @@ export default function App() {
         } else {
           setActiveShift(null);
         }
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, 'shifts');
       });
       return () => unsubscribe();
     }
-  }, [user]);
+  }, [user, userRole]);
 
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
@@ -157,13 +252,48 @@ export default function App() {
     );
   }
 
+  if (user && !userRole) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center"
+        >
+          <div className="w-16 h-16 bg-red-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <AlertTriangle className="w-8 h-8 text-red-600" />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-900 mb-2">Acceso Denegado</h1>
+          <p className="text-slate-500 mb-8">
+            Tu cuenta ({user.email}) no está autorizada para ingresar al sistema. 
+            Contacta al administrador para solicitar acceso.
+          </p>
+          <button
+            onClick={handleLogout}
+            className="w-full py-3 px-4 bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-xl transition-colors"
+          >
+            Cerrar Sesión
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
   const navItems = [
-    { id: 'dashboard', label: 'Panel Control', icon: LayoutDashboard },
-    { id: 'pos', label: 'Punto de Venta', icon: ShoppingCart },
-    { id: 'inventory', label: 'Inventario', icon: Package },
-    { id: 'history', label: 'Historial', icon: History },
-    { id: 'shift', label: 'Turno Actual', icon: Clock },
-    ...(userRole === 'admin' ? [{ id: 'users', label: 'Usuarios', icon: Users }] : []),
+    ...(userRole === 'admin' ? [
+      { id: 'dashboard', label: 'Panel Control', icon: LayoutDashboard },
+      { id: 'inventory', label: 'Inventario', icon: Package },
+      { id: 'history', label: 'Historial', icon: History },
+      { id: 'users', label: 'Gestión de Cajeros', icon: Users }
+    ] : [
+      { id: 'pos', label: 'Punto de Venta', icon: ShoppingCart },
+      { id: 'shift', label: 'Turno Actual', icon: Clock },
+      { id: 'history', label: 'Historial', icon: History },
+    ]),
+    ...(userRole === 'admin' ? [
+      { id: 'pos', label: 'Punto de Venta', icon: ShoppingCart },
+      { id: 'shift', label: 'Turno Actual', icon: Clock }
+    ] : []),
   ];
 
   return (
@@ -277,9 +407,9 @@ export default function App() {
               transition={{ duration: 0.2 }}
             >
               {currentView === 'dashboard' && <Dashboard userRole={userRole} />}
-              {currentView === 'inventory' && <Inventory />}
+              {currentView === 'inventory' && <Inventory userRole={userRole} />}
               {currentView === 'pos' && <POS user={user} activeShift={activeShift} />}
-              {currentView === 'history' && <SalesHistory />}
+              {currentView === 'history' && <SalesHistory userRole={userRole} />}
               {currentView === 'users' && <UserManagement />}
               {currentView === 'shift' && (
                 <ShiftManager 
@@ -294,9 +424,9 @@ export default function App() {
         </div>
       </main>
 
-      {/* Blocking Shift Manager when no active shift */}
+      {/* Blocking Shift Manager when no active shift (Only for non-admins or if admin wants to use POS) */}
       <AnimatePresence>
-        {!activeShift && (
+        {!activeShift && userRole === 'staff' && (
           <ShiftManager 
             user={user} 
             onShiftStarted={(shift) => setActiveShift(shift)}
