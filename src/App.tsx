@@ -18,7 +18,9 @@ import {
   DollarSign,
   PackageCheck,
   Users,
-  User as UserIcon
+  User as UserIcon,
+  Lock,
+  Shield
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -52,8 +54,9 @@ import POS from './components/POS';
 import SalesHistory from './components/SalesHistory';
 import ShiftManager from './components/ShiftManager';
 import UserManagement from './components/UserManagement';
+import Settings from './components/Settings';
 
-type View = 'dashboard' | 'inventory' | 'pos' | 'history' | 'users' | 'shift';
+type View = 'dashboard' | 'inventory' | 'pos' | 'history' | 'users' | 'shift' | 'settings';
 
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
@@ -62,14 +65,40 @@ export default function App() {
   const [currentView, setCurrentView] = useState<View>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [activeShift, setActiveShift] = useState<any>(null);
+  const [isAdminVerified, setIsAdminVerified] = useState(false);
+  const [pendingView, setPendingView] = useState<View | null>(null);
+  const [pin, setPin] = useState('');
+  const [pinError, setPinError] = useState(false);
+  const [storedPin, setStoredPin] = useState('1234');
+
+  const PROTECTED_VIEWS: View[] = ['dashboard', 'inventory', 'users', 'settings'];
 
   useEffect(() => {
-    const handleViewChange = (e: any) => {
-      if (e.detail) setCurrentView(e.detail as View);
-    };
-    window.addEventListener('changeView', handleViewChange);
-    return () => window.removeEventListener('changeView', handleViewChange);
+    // Fetch PIN from Firestore
+    const unsubscribePin = onSnapshot(doc(db, 'settings', 'admin'), (doc) => {
+      if (doc.exists()) {
+        setStoredPin(doc.data().pin || '1234');
+      }
+    });
+    return () => unsubscribePin();
   }, []);
+
+  useEffect(() => {
+    const handleEventViewChange = (e: any) => {
+      if (e.detail) {
+        const view = e.detail as View;
+        if (userRole === 'admin' && PROTECTED_VIEWS.includes(view) && !isAdminVerified) {
+          setPendingView(view);
+          setPin('');
+          setPinError(false);
+        } else {
+          setCurrentView(view);
+        }
+      }
+    };
+    window.addEventListener('changeView', handleEventViewChange);
+    return () => window.removeEventListener('changeView', handleEventViewChange);
+  }, [userRole, isAdminVerified]);
 
   useEffect(() => {
     if (!loading && userRole) {
@@ -217,7 +246,10 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => signOut(auth);
+  const handleLogout = () => {
+    signOut(auth);
+    setIsAdminVerified(false);
+  };
 
   if (loading) {
     return (
@@ -226,6 +258,32 @@ export default function App() {
       </div>
     );
   }
+
+  const handleViewChange = (view: View) => {
+    if (userRole === 'admin' && PROTECTED_VIEWS.includes(view) && !isAdminVerified) {
+      setPendingView(view);
+      setPin('');
+      setPinError(false);
+    } else {
+      setCurrentView(view);
+    }
+  };
+
+  const handlePinSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pin === storedPin) {
+      setIsAdminVerified(true);
+      if (pendingView) {
+        setCurrentView(pendingView);
+        setPendingView(null);
+      }
+      setPin('');
+      setPinError(false);
+    } else {
+      setPinError(true);
+      setPin('');
+    }
+  };
 
   if (!user) {
     return (
@@ -238,7 +296,7 @@ export default function App() {
           <div className="w-16 h-16 bg-indigo-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
             <Package className="w-8 h-8 text-indigo-600" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 mb-2">Minimark AyB</h1>
+          <h1 className="text-2xl font-bold text-slate-900 mb-2">Software de Ventas</h1>
           <p className="text-slate-500 mb-8">Inicia sesión para gestionar tu stock y ventas.</p>
           <button
             onClick={handleLogin}
@@ -284,7 +342,8 @@ export default function App() {
       { id: 'dashboard', label: 'Panel Control', icon: LayoutDashboard },
       { id: 'inventory', label: 'Inventario', icon: Package },
       { id: 'history', label: 'Historial', icon: History },
-      { id: 'users', label: 'Gestión de Cajeros', icon: Users }
+      { id: 'users', label: 'Gestión de Cajeros', icon: Users },
+      { id: 'settings', label: 'Configuración', icon: Shield }
     ] : [
       { id: 'pos', label: 'Punto de Venta', icon: ShoppingCart },
       { id: 'shift', label: 'Turno Actual', icon: Clock },
@@ -309,14 +368,14 @@ export default function App() {
           <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center flex-shrink-0">
             <Package className="w-5 h-5 text-white" />
           </div>
-          {isSidebarOpen && <span className="font-bold text-slate-900 truncate">Minimark AyB</span>}
+          {isSidebarOpen && <span className="font-bold text-slate-900 truncate">Software de Ventas</span>}
         </div>
 
         <nav className="flex-1 px-3 space-y-1">
           {navItems.map((item) => (
             <button
               key={item.id}
-              onClick={() => setCurrentView(item.id as View)}
+              onClick={() => handleViewChange(item.id as View)}
               className={cn(
                 "w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors",
                 currentView === item.id 
@@ -411,6 +470,7 @@ export default function App() {
               {currentView === 'pos' && <POS user={user} activeShift={activeShift} />}
               {currentView === 'history' && <SalesHistory userRole={userRole} />}
               {currentView === 'users' && <UserManagement />}
+              {currentView === 'settings' && <Settings />}
               {currentView === 'shift' && (
                 <ShiftManager 
                   user={user} 
@@ -432,6 +492,65 @@ export default function App() {
             onShiftStarted={(shift) => setActiveShift(shift)}
             onShiftClosed={() => setActiveShift(null)}
           />
+        )}
+      </AnimatePresence>
+      {/* Admin Access Key Modal */}
+      <AnimatePresence>
+        {pendingView && (
+          <div className="fixed inset-0 z-[300] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="max-w-sm w-full bg-white rounded-[2.5rem] shadow-2xl overflow-hidden p-10 text-center"
+            >
+              <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                <Lock className="w-10 h-10" />
+              </div>
+              
+              <h3 className="text-2xl font-black text-slate-900 mb-2">Acceso Restringido</h3>
+              <p className="text-slate-500 font-medium mb-8">Ingresa la clave de acceso para entrar al menú de gestión.</p>
+
+              <form onSubmit={handlePinSubmit} className="space-y-6">
+                <div>
+                  <input 
+                    autoFocus
+                    type="password"
+                    placeholder="••••"
+                    maxLength={4}
+                    className={cn(
+                      "w-full text-center text-4xl tracking-[1em] py-4 bg-slate-50 border-2 rounded-2xl outline-none transition-all font-black",
+                      pinError ? "border-red-500 bg-red-50 text-red-600" : "border-transparent focus:border-indigo-500 focus:bg-white text-slate-900"
+                    )}
+                    value={pin}
+                    onChange={(e) => {
+                      setPin(e.target.value);
+                      if (pinError) setPinError(false);
+                    }}
+                  />
+                  {pinError && (
+                    <p className="text-red-500 text-xs font-bold mt-2 uppercase tracking-wider">Clave incorrecta</p>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-3">
+                  <button 
+                    type="submit"
+                    className="w-full py-4 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
+                  >
+                    Verificar Clave
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => setPendingView(null)}
+                    className="w-full py-4 bg-slate-100 text-slate-600 font-bold rounded-2xl hover:bg-slate-200 transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>

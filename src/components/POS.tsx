@@ -10,7 +10,8 @@ import {
   Smartphone,
   CheckCircle2,
   Printer,
-  X
+  X,
+  Shield
 } from 'lucide-react';
 import { 
   collection, 
@@ -49,6 +50,11 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [lastSaleId, setLastSaleId] = useState('');
   const [lastSaleData, setLastSaleData] = useState<any>(null);
+  const [isAfipEnabled, setIsAfipEnabled] = useState(false);
+  const [customerCuit, setCustomerCuit] = useState('');
+  const [invoiceType, setInvoiceType] = useState<number>(11); // 11: Factura C
+  const [isAfipLoading, setIsAfipLoading] = useState(false);
+  const [afipError, setAfipError] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -167,8 +173,49 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
     };
 
     try {
+      let afipData = null;
+
+      // 0. AFIP Invoicing (Optional)
+      if (isAfipEnabled) {
+        setIsAfipLoading(true);
+        setAfipError(null);
+        try {
+          const response = await fetch('/api/afip/invoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              items: cart,
+              total,
+              paymentMethod,
+              customerCuit: customerCuit || null,
+              invoiceType
+            })
+          });
+
+          const result = await response.json();
+          if (!response.ok) {
+            throw new Error(result.details || result.error || 'Error en facturación AFIP');
+          }
+          afipData = result;
+        } catch (err: any) {
+          setAfipError(err.message);
+          setIsAfipLoading(false);
+          return; // Stop if AFIP fails and it was requested
+        }
+      }
+
       // 1. Create Sale Record
-      const saleRef = await addDoc(collection(db, 'sales'), saleData);
+      const finalSaleData = {
+        ...saleData,
+        afip: afipData ? {
+          cae: afipData.cae,
+          caeExpiration: afipData.caeExpiration,
+          voucherNumber: afipData.voucherNumber,
+          invoiceType
+        } : null
+      };
+
+      const saleRef = await addDoc(collection(db, 'sales'), finalSaleData);
       
       // 2. Update Stock for each item
       for (const item of cart) {
@@ -187,11 +234,14 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
       await updateDoc(doc(db, 'shifts', activeShift.id), shiftUpdate);
 
       setLastSaleId(saleRef.id);
-      setLastSaleData(saleData);
+      setLastSaleData(finalSaleData);
       setIsSuccessModalOpen(true);
       setIsPreviewModalOpen(false);
       setCart([]);
       setAmountPaid(0);
+      setIsAfipEnabled(false);
+      setCustomerCuit('');
+      setIsAfipLoading(false);
     } catch (error: any) {
       if (error.code === 'permission-denied') {
         handleFirestoreError(error, OperationType.WRITE, 'POS operations');
@@ -526,17 +576,87 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
                       )}
                     </div>
                   )}
+
+                  {/* AFIP Section */}
+                  <div className="pt-4 border-t border-slate-100 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Shield className="w-5 h-5 text-indigo-600" />
+                        <span className="text-sm font-bold text-slate-700">Facturación Electrónica (AFIP)</span>
+                      </div>
+                      <button 
+                        onClick={() => setIsAfipEnabled(!isAfipEnabled)}
+                        className={cn(
+                          "w-12 h-6 rounded-full transition-colors relative",
+                          isAfipEnabled ? "bg-indigo-600" : "bg-slate-200"
+                        )}
+                      >
+                        <div className={cn(
+                          "absolute top-1 w-4 h-4 bg-white rounded-full transition-all",
+                          isAfipEnabled ? "left-7" : "left-1"
+                        )} />
+                      </button>
+                    </div>
+
+                    {isAfipEnabled && (
+                      <motion.div 
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        className="space-y-3 overflow-hidden"
+                      >
+                        <div className="grid grid-cols-2 gap-2">
+                          <button 
+                            onClick={() => setInvoiceType(11)}
+                            className={cn(
+                              "py-2 rounded-lg text-xs font-bold border transition-all",
+                              invoiceType === 11 ? "bg-indigo-50 border-indigo-200 text-indigo-600" : "bg-white border-slate-200 text-slate-500"
+                            )}
+                          >
+                            Factura C
+                          </button>
+                          <button 
+                            onClick={() => setInvoiceType(6)}
+                            className={cn(
+                              "py-2 rounded-lg text-xs font-bold border transition-all",
+                              invoiceType === 6 ? "bg-indigo-50 border-indigo-200 text-indigo-600" : "bg-white border-slate-200 text-slate-500"
+                            )}
+                          >
+                            Factura B
+                          </button>
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">CUIT Cliente (Opcional)</label>
+                          <input 
+                            type="text" 
+                            placeholder="Ej: 20304050607"
+                            className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                            value={customerCuit}
+                            onChange={(e) => setCustomerCuit(e.target.value)}
+                          />
+                        </div>
+                        {afipError && (
+                          <p className="text-[10px] text-red-500 font-bold bg-red-50 p-2 rounded-lg border border-red-100">
+                            {afipError}
+                          </p>
+                        )}
+                      </motion.div>
+                    )}
+                  </div>
                 </div>
               </div>
 
               <div className="p-6 bg-slate-50 border-t border-slate-100">
                 <button 
                   onClick={handleCompleteSale}
-                  disabled={paymentMethod === 'cash' && amountPaid < total}
+                  disabled={(paymentMethod === 'cash' && amountPaid < total) || isAfipLoading}
                   className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-2xl shadow-lg shadow-indigo-100 transition-all flex items-center justify-center gap-2"
                 >
-                  <CheckCircle2 className="w-5 h-5" />
-                  Confirmar y Registrar Venta
+                  {isAfipLoading ? (
+                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-5 h-5" />
+                  )}
+                  {isAfipLoading ? 'Procesando con AFIP...' : 'Confirmar y Registrar Venta'}
                 </button>
               </div>
             </motion.div>
@@ -565,12 +685,29 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
               </div>
               <h3 className="text-2xl font-bold text-slate-900 mb-2">¡Venta Exitosa!</h3>
               <p className="text-slate-500 mb-6">La transacción ha sido registrada correctamente.</p>
-              <div className="bg-slate-50 p-4 rounded-2xl mb-8 text-left">
+              <div className="bg-slate-50 p-4 rounded-2xl mb-8 text-left space-y-2">
                 <div className="flex justify-between text-sm mb-1">
                   <span className="text-slate-500">ID Venta:</span>
                   <span className="font-mono text-slate-900">#{lastSaleId.slice(-6).toUpperCase()}</span>
                 </div>
-                <div className="flex justify-between font-bold text-lg">
+                {lastSaleData?.afip && (
+                  <div className="bg-white p-3 rounded-xl border border-slate-200 space-y-1">
+                    <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Comprobante AFIP</p>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500">CAE:</span>
+                      <span className="font-bold text-slate-900">{lastSaleData.afip.cae}</span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500">Vto CAE:</span>
+                      <span className="font-bold text-slate-900">{lastSaleData.afip.caeExpiration}</span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-500">Nro:</span>
+                      <span className="font-bold text-slate-900">0001-{lastSaleData.afip.voucherNumber.toString().padStart(8, '0')}</span>
+                    </div>
+                  </div>
+                )}
+                <div className="flex justify-between font-bold text-lg pt-2 border-t border-slate-100">
                   <span className="text-slate-900">Total:</span>
                   <span className="text-indigo-600">{formatCurrency(lastSaleData?.total || 0)}</span>
                 </div>
@@ -606,7 +743,13 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
         <div id="printable-receipt" className="hidden print:block fixed inset-0 bg-white z-[9999] p-8 text-black font-mono text-sm">
           <div className="max-w-[300px] mx-auto space-y-4">
             <div className="text-center border-b border-dashed border-black pb-4">
-              <h1 className="text-xl font-bold uppercase">Minimark AyB</h1>
+              <h1 className="text-xl font-bold uppercase">Software de Ventas</h1>
+              {lastSaleData.afip && (
+                <div className="mt-1 text-[10px] font-bold">
+                  <p>Factura {lastSaleData.afip.invoiceType === 11 ? 'C' : 'B'}</p>
+                  <p>Nro: 0001-{lastSaleData.afip.voucherNumber.toString().padStart(8, '0')}</p>
+                </div>
+              )}
               <p className="text-xs">¡Gracias por su compra!</p>
               <p className="text-[10px] mt-1">{lastSaleData.timestamp?.toDate().toLocaleString('es-AR')}</p>
             </div>
@@ -625,6 +768,12 @@ export default function POS({ user, activeShift }: { user: any, activeShift: any
             </div>
 
             <div className="border-t border-dashed border-black pt-2 space-y-1">
+              {lastSaleData.afip && (
+                <div className="text-[10px] border-b border-dashed border-black pb-2 mb-2">
+                  <p>CAE: {lastSaleData.afip.cae}</p>
+                  <p>Vto CAE: {lastSaleData.afip.caeExpiration}</p>
+                </div>
+              )}
               <div className="flex justify-between font-bold text-base">
                 <span>TOTAL</span>
                 <span>{formatCurrency(lastSaleData.total)}</span>

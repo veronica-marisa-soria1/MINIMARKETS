@@ -42,6 +42,7 @@ export default function Inventory({ userRole }: { userRole: 'admin' | 'staff' | 
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
   const [formData, setFormData] = useState({
@@ -97,14 +98,17 @@ export default function Inventory({ userRole }: { userRole: 'admin' | 'staff' | 
   };
 
   const confirmDelete = async () => {
-    if (!productToDelete) return;
+    if (!productToDelete || isDeleting) return;
     
+    setIsDeleting(true);
     try {
       await deleteDoc(doc(db, 'products', productToDelete.id));
       setIsDeleteModalOpen(false);
       setProductToDelete(null);
     } catch (error) {
-      console.error("Error deleting product:", error);
+      handleFirestoreError(error, OperationType.DELETE, `products/${productToDelete.id}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -397,12 +401,18 @@ export default function Inventory({ userRole }: { userRole: 'admin' | 'staff' | 
                 <div className="flex flex-col gap-3">
                   <button 
                     onClick={confirmDelete}
-                    className="w-full py-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl transition-colors shadow-lg shadow-red-100"
+                    disabled={isDeleting}
+                    className="w-full py-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl transition-colors shadow-lg shadow-red-100 flex items-center justify-center gap-2"
                   >
-                    Sí, Eliminar Producto
+                    {isDeleting ? (
+                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      'Sí, Eliminar Producto'
+                    )}
                   </button>
                   <button 
                     onClick={() => setIsDeleteModalOpen(false)}
+                    disabled={isDeleting}
                     className="w-full py-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition-colors"
                   >
                     Cancelar

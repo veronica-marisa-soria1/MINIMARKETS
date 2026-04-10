@@ -142,5 +142,9 @@ service cloud.firestore {
       allow update: if (isStaff() && request.auth.uid == resource.data.userId && isValidShift(request.resource.data)) || isAdmin();
       allow delete: if isAdmin();
     }
+
+    match /settings/{settingId} {
+      allow read, write: if isAdmin();
+    }
   }
 }

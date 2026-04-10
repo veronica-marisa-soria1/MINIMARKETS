@@ -24,6 +24,26 @@ export default function UserManagement() {
   const [newUserRole, setNewUserRole] = useState<'admin' | 'staff'>('staff');
   const [loading, setLoading] = useState(false);
 
+  // Confirmation Modal State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    type: 'delete' | 'role' | 'auth' | null;
+    user: UserProfile | null;
+    title: string;
+    message: string;
+    confirmText: string;
+    confirmColor: string;
+  }>({
+    isOpen: false,
+    type: null,
+    user: null,
+    title: '',
+    message: '',
+    confirmText: '',
+    confirmColor: ''
+  });
+  const [isActionLoading, setIsActionLoading] = useState(false);
+
   useEffect(() => {
     const q = query(collection(db, 'users'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -79,48 +99,67 @@ export default function UserManagement() {
     }
   };
 
-  const toggleRole = async (user: UserProfile) => {
+  const toggleRole = (user: UserProfile) => {
     const newRole = user.role === 'admin' ? 'staff' : 'admin';
-    if (window.confirm(`¿Cambiar el rol de ${user.email} a ${newRole}?`)) {
-      try {
-        await updateDoc(doc(db, 'users', user.id), { role: newRole });
-      } catch (error: any) {
-        if (error.code === 'permission-denied') {
-          handleFirestoreError(error, OperationType.UPDATE, `users/${user.id}`);
-        }
-        console.error("Error updating role:", error);
-      }
-    }
+    setConfirmModal({
+      isOpen: true,
+      type: 'role',
+      user,
+      title: '¿Cambiar Rol?',
+      message: `¿Estás seguro de cambiar el rol de ${user.email} a ${newRole === 'admin' ? 'Administrador' : 'Cajero'}?`,
+      confirmText: 'Sí, Cambiar Rol',
+      confirmColor: 'bg-indigo-600 hover:bg-indigo-700'
+    });
   };
 
-  const toggleAuth = async (user: UserProfile) => {
+  const toggleAuth = (user: UserProfile) => {
     const newStatus = !user.authorized;
-    if (window.confirm(`¿${newStatus ? 'Autorizar' : 'Revocar acceso'} a ${user.email}?`)) {
-      try {
-        await updateDoc(doc(db, 'users', user.id), { authorized: newStatus });
-      } catch (error: any) {
-        if (error.code === 'permission-denied') {
-          handleFirestoreError(error, OperationType.UPDATE, `users/${user.id}`);
-        }
-        console.error("Error updating auth:", error);
-      }
-    }
+    setConfirmModal({
+      isOpen: true,
+      type: 'auth',
+      user,
+      title: newStatus ? '¿Autorizar Acceso?' : '¿Revocar Acceso?',
+      message: `¿Estás seguro de ${newStatus ? 'autorizar' : 'revocar'} el acceso a ${user.email}?`,
+      confirmText: newStatus ? 'Sí, Autorizar' : 'Sí, Revocar',
+      confirmColor: newStatus ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'
+    });
   };
 
-  const deleteUser = async (user: UserProfile) => {
+  const deleteUser = (user: UserProfile) => {
     if (user.email === "soriav449veronica@gmail.com") {
-      alert("No puedes eliminar al administrador principal.");
+      // We could use a custom alert modal here too, but for now let's just use a simple check
       return;
     }
-    if (window.confirm(`¿Estás seguro de eliminar a ${user.email}?`)) {
-      try {
+    setConfirmModal({
+      isOpen: true,
+      type: 'delete',
+      user,
+      title: '¿Eliminar Usuario?',
+      message: `¿Estás seguro de eliminar permanentemente a ${user.email}? Esta acción no se puede deshacer.`,
+      confirmText: 'Sí, Eliminar',
+      confirmColor: 'bg-red-600 hover:bg-red-700'
+    });
+  };
+
+  const handleConfirmAction = async () => {
+    if (!confirmModal.user || !confirmModal.type || isActionLoading) return;
+
+    setIsActionLoading(true);
+    try {
+      const user = confirmModal.user;
+      if (confirmModal.type === 'role') {
+        const newRole = user.role === 'admin' ? 'staff' : 'admin';
+        await updateDoc(doc(db, 'users', user.id), { role: newRole });
+      } else if (confirmModal.type === 'auth') {
+        await updateDoc(doc(db, 'users', user.id), { authorized: !user.authorized });
+      } else if (confirmModal.type === 'delete') {
         await deleteDoc(doc(db, 'users', user.id));
-      } catch (error: any) {
-        if (error.code === 'permission-denied') {
-          handleFirestoreError(error, OperationType.DELETE, `users/${user.id}`);
-        }
-        console.error("Error deleting user:", error);
       }
+      setConfirmModal(prev => ({ ...prev, isOpen: false }));
+    } catch (error: any) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${confirmModal.user.id}`);
+    } finally {
+      setIsActionLoading(false);
     }
   };
 
@@ -389,6 +428,52 @@ export default function UserManagement() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Confirmation Modal */}
+      <AnimatePresence>
+        {confirmModal.isOpen && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="max-w-sm w-full bg-white rounded-[2.5rem] shadow-2xl overflow-hidden p-8 text-center"
+            >
+              <div className={cn(
+                "w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6",
+                confirmModal.type === 'delete' ? "bg-red-50 text-red-600" : 
+                confirmModal.type === 'role' ? "bg-indigo-50 text-indigo-600" : "bg-emerald-50 text-emerald-600"
+              )}>
+                {confirmModal.type === 'delete' ? <Trash2 className="w-10 h-10" /> : 
+                 confirmModal.type === 'role' ? <Shield className="w-10 h-10" /> : <ShieldCheck className="w-10 h-10" />}
+              </div>
+              
+              <h3 className="text-2xl font-black text-slate-900 mb-2">{confirmModal.title}</h3>
+              <p className="text-slate-500 font-medium mb-8">{confirmModal.message}</p>
+
+              <div className="flex flex-col gap-3">
+                <button 
+                  onClick={handleConfirmAction}
+                  disabled={isActionLoading}
+                  className={cn(
+                    "w-full py-4 text-white font-bold rounded-2xl transition-all shadow-lg flex items-center justify-center gap-2",
+                    confirmModal.confirmColor
+                  )}
+                >
+                  {isActionLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : confirmModal.confirmText}
+                </button>
+                <button 
+                  onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                  disabled={isActionLoading}
+                  className="w-full py-4 bg-slate-100 text-slate-600 font-bold rounded-2xl hover:bg-slate-200 transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
